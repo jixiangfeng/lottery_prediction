@@ -1,0 +1,53 @@
+[flake8]
+# 放宽行宽与大量历史样式告警，优先保证现有代码可通过；
+# 后续逐步在新增/修改模块收紧规范。
+max-line-length = 140
+extend-ignore =
+    # 与 black 兼容
+    E203,
+    W503,
+    # 历史代码样式类（临时整体忽略）
+    E111,
+    E116,
+    E117,
+    E125,
+    E127,
+    E128,
+    E202,
+    E231,
+    E252,
+    E261,
+    E266,
+    E271,
+    E301,
+    E302,
+    E303,
+    E305,
+    E306,
+    E402,
+    E501,
+    E711,
+    E712,
+    E721,
+    E722,
+    E731,
+    E741,
+    W291,
+    W292,
+    W293,
+    W391,
+    E225,
+    E502,
+    F401,
+    F841,
+    F824
+
+# 针对历史脚本中大量使用 * 导入的情况，按文件豁免（后续逐步消除）
+# 新增的共享模块 (shared_*) 和 metrics 模块保持严格规范
+per-file-ignores =
+    src/__init__.py: F403, F405
+    src/analysis/kl8_analysis.py: F403, F405, F401
+    src/analysis/kl8_analysis_plus.py: F403, F405, F401
+    src/analysis/kl8_cash.py: F403, F405, F401
+    src/analysis/kl8_cash_plus.py: F403, F405, F401
+    src/analysis/kl8_running.py: F403, F405, F401

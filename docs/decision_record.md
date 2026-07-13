@@ -1,0 +1,64 @@
+# 设计决策记录（Decision Record）
+
+## 2025-10-13 Copula 采样、图嵌入与互信息惩罚
+- 新增 `src/analysis/copula_sampler.py`，在高级策略中默认随 `advanced_mode>=2` 启用；CLI `--copula_*` 参数支持覆盖样本量、收缩强度、候选倍率与随机种子。
+- 训练脚本 `scripts/train_graph_embeddings.py` 基于 PyTorch Skip-gram，支持 `--device auto` 自动选择 CPU/GPU/AMD ROCm，结果写入 `analysis.graph_embedding.cache_file`。
+- `feature_enhancer` 引入 `graph_embedding_scores` 与缓存清理函数，综合得分增加图嵌入权重，并在测试中覆盖空/有缓存场景。
+- `src/analysis/mutual_information.py` 计算 80×80 互信息矩阵，在 `advanced_number_generation` 中作为多样性扣分，避免高度相关号码集中。
+- `Makefile` 新增 `make train-graph`，README/运行指南同步补充；`config/config.yaml` 扩充 `analysis.copula`、`analysis.graph_embedding` 配置项。
+
+## 2025-10-13 Dirichlet 平滑与关联规则
+- 在 `src/analysis/feature_enhancer.py` 中引入 Dirichlet-Multinomial 后验得分，并通过 `config.analysis.dirichlet` 控制先验与方差惩罚。
+- 新增 `src/analysis/rule_miner.py`，基于 FP-Growth 提供 `--rule_filter` 软/硬模式并缓存规则。
+- `kl8_analysis*.py` 接入规则筛选并在 README/文档中暴露 CLI 参数与配置示例。
+- `tests/test_rule_miner.py` 补充硬/软模式单元测试，验证违规组合与惩罚权重。
+
+## 2025-10-12 特征增强引擎升级
+- 新增 `src/analysis/feature_enhancer.py`，实现“近期动量 + 共现谱”的混合评分，支持 `--feature_mode`。
+- `kl8_analysis.py` 与 `kl8_analysis_plus.py` 在高级模式下引入特征得分，于候选筛选阶段叠加权重。
+- 提供 `FeatureDebugInfo` 以输出细节，便于调试与文档示例。
+- 规划单元测试 `tests/test_feature_enhancer.py` 覆盖动量、共现与空数据边界（若缺失将补充）。
+
+---
+
+## 2025-12-19 多线程执行架构优化（Plus 版本）
+### 背景与问题
+历史实现中使用多进程并行：
+- 存在重复数据下载，浪费网络与 IO 资源。
+- 进程间共享状态困难，导致全局变量易被误用。
+- 进程模型带来更高的内存开销与启动成本。
+- 错误传播与统一处理复杂，定位困难。
+
+### 决策
+在 I/O 为主的批量任务场景，采用 `concurrent.futures.ThreadPoolExecutor` 替代 `multiprocessing.Process`。
+
+### 选型对比（要点）
+- 共享内存：线程天然共享，进程需要序列化与跨进程通信。
+- 启动成本：线程低，进程高。
+- GIL 影响：CPU 密集型线程受限，但 I/O 密集型收益明显。
+- 错误处理：线程池有统一 Future/异常收集；进程需额外管道与协议。
+
+### 架构设计要点
+1. 数据下载去重：统一入口 `download_data_if_needed()`，避免并发重复拉取。
+2. 线程安全：必要处使用锁保护共享资源，约束副作用边界。
+3. 任务编排：主流程负责构建任务，工作线程仅处理纯函数/无副作用逻辑。
+4. 错误治理：使用 `as_completed` 聚合结果，失败与重试策略解耦。
+
+### 实现节点
+- 线程池配置：`max_workers` 可配置，结合任务与机器核数动态调整。
+- 进度与日志：实时输出成功/失败计数与摘要日志。
+- 序列化优化：跨线程传递轻量数据结构，避免不必要的大对象复制。
+
+### 效果（定性）
+- 明显减少重复下载与请求抖动。
+- 内存占用更稳定，整体吞吐提升。
+- 故障可观测性与定位效率提升。
+
+---
+
+## 2025-10-11 架构精简与模块重组
+- 精简历史脚本与模型代码，保留 `src/analysis/*` 的核心实现，移除未使用与耦合度高的遗留模块。
+- 配置与公共方法下沉至统一位置，减少隐式导入与副作用，改进启动与调试体验。
+- 数据抓取模块独立，统一格式校验与缓存策略，提升可维护性与可测试性。
+- 工具链与测试重建：补充开发依赖与 Pytest 基础用例，使本地 `make ci` 可重复通过。
+- 引入示例/样例数据用于本地演示与 CI，但不提交真实数据集。

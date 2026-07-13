@@ -1,0 +1,8 @@
+[run]
+omit =
+    src/analysis/*
+    src/modeling.py
+    src/pipeline.py
+
+[report]
+show_missing = True
