@@ -39,3 +39,14 @@ ranked, debug = compute_enhanced_scores(draws, limit=100, use_pca=True, pca_comp
 - 工作线程需捕获异常，单次失败不会终止主流程。
 
 > CLI 脚本仍以命令行方式存在；若需在代码中复用，请通过 `subprocess.run([...])` 调用并写明全部参数。
+# 数字彩第二轮 API
+
+- `analyze_digit_history(...)`：保留旧字段，新增 `pair_frequency_windows`、`pair_probabilities`、`shape_probabilities`、`sum_probabilities`、`span_probabilities` 与前三位结构概率；`to_dict()` 使用对应 camelCase 字段。
+- `score_digit_prefix(stats, numbers, config)`：共享三位前缀启发式复合评分，排列三与排列五前三位均调用该函数；它不是规范联合概率。
+- `generate_digit_candidates(...)`：兼容旧 API，返回的 `candidates` 仍为直选候选。
+- `generate_digit_betting_candidates(...)`：返回 `direct_candidates` 与 `group_candidates`；排列五组选为空。
+- `rank_digit_numbers(...)`：不构造全量候选对象，返回目标号码在过滤空间中的复合模型分排名与评分。
+- 候选 JSON 使用 `modelWeight` 与过滤空间归一化的 `compositeModelWeight`；旧 `jointProbability` / `probabilityMass` 为 deprecated 兼容字段，不表示实际开奖概率。
+- `run_digit_walk_forward_backtest(..., baseline_runs=20, nested_tuning=False, inner_validation_periods=10)`：新增多随机分布与严格嵌套调参。
+
+所有评分、排名和回测接口仅用于历史研究，不能保证中奖。

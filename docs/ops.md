@@ -11,6 +11,24 @@
   python src/analysis/kl8_analysis.py ...  # 先单次验证，再批量投入
   ```
 
+## 数字彩第二轮运行建议
+
+```bash
+make digit-walk-forward \
+  DIGIT_LOTTERY=fc3d \
+  DIGIT_CSV=data/fc3d/data.csv \
+  DIGIT_WF_PERIODS=30 \
+  DIGIT_WF_BASELINE_RUNS=20 \
+  DIGIT_WF_NESTED_TUNING=1 \
+  DIGIT_WF_INNER_VALIDATION_PERIODS=10
+```
+
+- 日常快速验证可将 `DIGIT_WF_BASELINE_RUNS` 降为 5；正式比较建议至少 20。
+- 排列五嵌套前推成本最高，先用 5～10 个外层目标期冒烟，再扩大窗口。
+- 使用 `DIGIT_WF_REPORT_PREFIX=second_round` 写入独立文件，避免覆盖既有评估报告。
+- 监控每期 `selectedConfigTrainEndIssue < issue`，若不满足应立即停止使用报告。
+- 结果不超过随机时必须如实保留；本工具不能保证提高中奖概率。
+
 ## 关键监控指标
 | 项目 | 检查方式 | 目标 |
 |------|----------|------|

@@ -22,6 +22,29 @@ ISSUE_COLUMN_ALIASES = ("期数", "期号", "issue", "Issue", "draw", "draw_no",
 NUMBER_COLUMN_ALIASES = ("开奖号码", "号码", "number", "numbers", "result", "openCode", "drawNumbers")
 
 
+def sort_digit_dataframe_by_issue(df: pd.DataFrame, *, ascending: bool) -> pd.DataFrame:
+    """按数值期号稳定排序，并拒绝歧义或重复期号。"""
+
+    output = df.copy()
+    issues = output["期数"].astype(str).str.strip()
+    invalid = ~issues.str.fullmatch(r"\d+")
+    if invalid.any():
+        values = issues[invalid].tolist()[:3]
+        raise ValueError(f"数字彩期号必须为纯数字，收到：{values}")
+    issue_order = issues.map(int)
+    duplicated = issue_order.duplicated(keep=False)
+    if duplicated.any():
+        values = issues[duplicated].tolist()[:5]
+        raise ValueError(f"数字彩数据包含重复期号：{values}")
+    output["期数"] = issues
+    output["__issue_order"] = issue_order
+    return (
+        output.sort_values("__issue_order", ascending=ascending, kind="mergesort")
+        .drop(columns="__issue_order")
+        .reset_index(drop=True)
+    )
+
+
 def _find_column(df: pd.DataFrame, aliases: tuple[str, ...]) -> str | None:
     columns = {str(column).strip(): column for column in df.columns}
     for alias in aliases:
@@ -93,7 +116,7 @@ def normalize_digit_dataframe(df: pd.DataFrame, rule: LotteryRule) -> pd.DataFra
     for _, row in output.iterrows():
         validate_numbers(rule, [int(row[column]) for column in rule.number_columns])
 
-    return output[["期数", *rule.number_columns]].sort_values("期数", ascending=False).reset_index(drop=True)
+    return sort_digit_dataframe_by_issue(output[["期数", *rule.number_columns]], ascending=False)
 
 
 def load_digit_csv(path: str | Path, rule: LotteryRule, *, encoding: str = "utf-8") -> pd.DataFrame:

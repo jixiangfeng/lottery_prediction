@@ -84,3 +84,40 @@ def test_normalize_digit_dataframe_rejects_missing_issue():
 
     with pytest.raises(ValueError, match="期号"):
         normalize_digit_dataframe(df, rule)
+
+
+def test_normalize_digit_dataframe_sorts_non_padded_numeric_issues_numerically():
+    rule = get_lottery_rule("fc3d")
+    df = pd.DataFrame(
+        [
+            {"期数": "9", "百位": 9, "十位": 0, "个位": 1},
+            {"期数": "11", "百位": 1, "十位": 1, "个位": 1},
+            {"期数": "8", "百位": 8, "十位": 0, "个位": 1},
+            {"期数": "10", "百位": 0, "十位": 1, "个位": 0},
+        ]
+    )
+
+    normalized = normalize_digit_dataframe(df, rule)
+
+    assert normalized["期数"].tolist() == ["11", "10", "9", "8"]
+
+
+def test_normalize_digit_dataframe_rejects_duplicate_numeric_issues():
+    rule = get_lottery_rule("fc3d")
+    df = pd.DataFrame(
+        [
+            {"期数": "01", "百位": 1, "十位": 2, "个位": 3},
+            {"期数": "1", "百位": 4, "十位": 5, "个位": 6},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="重复期号"):
+        normalize_digit_dataframe(df, rule)
+
+
+def test_normalize_digit_dataframe_rejects_non_numeric_issue():
+    rule = get_lottery_rule("fc3d")
+    df = pd.DataFrame([{"期数": "2026-A", "百位": 1, "十位": 2, "个位": 3}])
+
+    with pytest.raises(ValueError, match="纯数字"):
+        normalize_digit_dataframe(df, rule)

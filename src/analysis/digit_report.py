@@ -10,7 +10,12 @@ from pathlib import Path
 
 from src.analysis.digit_backtest import DigitBacktestSummary, build_digit_backtest_markdown, backtest_digit_candidates
 from src.analysis.betting_plan import BettingPlan, build_betting_plan_markdown, build_digit_betting_plan
-from src.analysis.digit_candidates import DigitCandidateConfig, DigitCandidateResult, generate_digit_candidates
+from src.analysis.digit_candidates import (
+    DigitBettingCandidateResult,
+    DigitCandidateConfig,
+    DigitCandidateResult,
+    generate_digit_betting_candidates,
+)
 from src.analysis.digit_data import load_digit_csv
 from src.analysis.digit_statistics import DigitStatisticsResult, analyze_digit_history
 from src.lotteries import get_lottery_rule
@@ -31,6 +36,7 @@ def build_digit_report_markdown(
     candidates: DigitCandidateResult | None = None,
     backtest_markdown: str | None = None,
     betting_plan: BettingPlan | None = None,
+    candidate_plan: DigitBettingCandidateResult | None = None,
 ) -> str:
     """根据数字彩统计结果生成 Markdown 报告。"""
 
@@ -87,11 +93,25 @@ def build_digit_report_markdown(
 
     if candidates is not None and candidates.candidates:
         lines.extend(["", "## 统计候选", ""])
+        lines.append("### 直选候选")
+        lines.append("")
+        lines.append("以下为按位置精确命中的直选候选；模型评分只表示历史统计排序质量，不是实际开奖概率。")
+        lines.append("")
         for index, candidate in enumerate(candidates.candidates, 1):
             lines.append(
                 f"{index}. `{candidate.text}` - 和值 {candidate.sum_value}，跨度 {candidate.span}，"
                 f"形态 {candidate.shape}，评分 {candidate.score:.4f}"
             )
+        if candidate_plan is not None and candidate_plan.group_candidates:
+            lines.extend(["", "### 组选候选（复合模型质量聚合）", ""])
+            lines.append("组选只比较数字集合，不要求位置顺序；过滤空间归一化模型质量不是实际开奖概率。")
+            lines.append("")
+            for index, candidate in enumerate(candidate_plan.group_candidates, 1):
+                lines.append(
+                    f"{index}. `{candidate.group_key}` - 形态 {candidate.shape}，"
+                    f"过滤空间归一化模型质量 {candidate.composite_model_weight:.6f}，"
+                    f"排列数 {candidate.permutations}（不是实际开奖概率）"
+                )
 
     if betting_plan is not None:
         lines.extend(["", build_betting_plan_markdown(betting_plan).rstrip()])
@@ -118,6 +138,7 @@ def build_digit_report_data(
     *,
     markdown_path: Path | None = None,
     betting_plan: BettingPlan | None = None,
+    candidate_plan: DigitBettingCandidateResult | None = None,
 ) -> dict:
     """生成前端友好的数字彩 JSON 数据。"""
 
@@ -139,6 +160,12 @@ def build_digit_report_data(
         "parityDistribution": dict(stats.parity_distribution),
         "bigSmallDistribution": dict(stats.big_small_distribution),
         "candidates": [candidate.to_dict() for candidate in candidates.candidates],
+        "directCandidates": [candidate.to_dict() for candidate in candidates.candidates],
+        "groupCandidates": (
+            [candidate.to_dict() for candidate in candidate_plan.group_candidates]
+            if candidate_plan is not None
+            else []
+        ),
         "candidateConfig": candidates.to_dict().get("config"),
         "backtest": backtest.to_dict(),
         "bettingPlan": betting_plan.to_dict() if betting_plan is not None else None,
@@ -163,21 +190,50 @@ def generate_digit_report_from_csv(
     rule = get_lottery_rule(lottery)
     df = load_digit_csv(csv_path, rule)
     stats = analyze_digit_history(df, rule)
-    candidates = generate_digit_candidates(stats, rule, config=DigitCandidateConfig(count=candidate_count))
+    candidate_plan = generate_digit_betting_candidates(
+        stats,
+        rule,
+        config=DigitCandidateConfig(count=candidate_count),
+        group_count=candidate_count,
+    )
+    candidates = DigitCandidateResult(
+        candidate_plan.rule_code,
+        candidate_plan.display_name,
+        candidate_plan.direct_candidates,
+        candidate_plan.config,
+    )
     betting_plan = build_digit_betting_plan(candidates)
     backtest = backtest_digit_candidates(df, rule, candidates)
     backtest_markdown = build_digit_backtest_markdown(backtest)
     output_path = Path(output_dir) / f"{rule.code}_daily_{stats.latest_issue}.md"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        build_digit_report_markdown(stats, top_n=top_n, candidates=candidates, backtest_markdown=backtest_markdown, betting_plan=betting_plan),
+        build_digit_report_markdown(
+            stats,
+            top_n=top_n,
+            candidates=candidates,
+            backtest_markdown=backtest_markdown,
+            betting_plan=betting_plan,
+            candidate_plan=candidate_plan,
+        ),
         encoding="utf-8",
     )
     if write_json:
         json_path = Path(output_dir) / "data" / f"{rule.code}_daily_{stats.latest_issue}.json"
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(
-            json.dumps(build_digit_report_data(stats, candidates, backtest, markdown_path=output_path, betting_plan=betting_plan), ensure_ascii=False, indent=2),
+            json.dumps(
+                build_digit_report_data(
+                    stats,
+                    candidates,
+                    backtest,
+                    markdown_path=output_path,
+                    betting_plan=betting_plan,
+                    candidate_plan=candidate_plan,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
     return output_path

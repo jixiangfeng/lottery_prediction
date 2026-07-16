@@ -17,8 +17,9 @@
 - 🔢 `src/analysis/digit_statistics.py`：数字彩通用统计模块，支持福彩3D、排列三、排列五的位置频率、和值、跨度、形态、奇偶大小和遗漏统计。
 - 🧹 `src/analysis/digit_data.py`：数字彩 CSV/DataFrame 标准化模块，支持期号/开奖号码列名识别、合并号码拆位、范围校验和按期号排序。
 - 📄 `src/analysis/digit_report.py` / `scripts/digit_report.py`：从本地 CSV 生成福彩3D、排列三、排列五 Markdown 分析日报。
-- 🎯 `src/analysis/digit_candidates.py`：数字彩统计候选生成器，支持和值、跨度、形态过滤和按位置权重采样。
+- 🎯 `src/analysis/digit_candidates.py`：数字彩统计候选生成器，枚举三位 1000 种/五位 100000 种完整空间，按多窗口位置频率、平滑概率和压缩遗漏确定性评分，并进行多样性选择。
 - 📈 `src/analysis/digit_backtest.py`：数字彩候选回测模块，支持三位直选/组选命中和排列五直选命中统计。
+- 🧪 `src/analysis/digit_walk_forward.py` / `scripts/digit_walk_forward.py`：严格逐期前推回测，每个目标期只使用此前历史，并与 `uniform_random` 基线对比。
 - 🧪 `tests/`：覆盖配置、特征增强、规则挖掘、Copula 采样等模块的 Pytest 套件。
 
 ## 快速开始
@@ -105,6 +106,9 @@ stats = analyze_digit_history(df, rule)
 
 ```text
 位置频率
+20/50/100/300 期多窗口位置频率与贝叶斯平滑概率
+所有 i<j 位置对的多窗口联合频率与贝叶斯平滑概率
+形态、和值、跨度的多窗口平滑概率
 当前位置遗漏
 和值分布
 跨度分布
@@ -115,6 +119,8 @@ stats = analyze_digit_history(df, rule)
 ```
 
 这一步仍是历史统计基础设施，不能保证预测命中；后续可在此基础上继续接数字彩数据下载、候选生成、奖表回测和 H5 展示。
+
+第二轮候选评分使用可配置的启发式复合对数分：位置边际、位置对、形态、和值、跨度为主，遗漏仅保留小权重辅助。由于特征存在重叠，该分数不是规范联合概率，也不是实际开奖概率。三位彩额外提供 `directCandidates` 与按无序数字集合聚合过滤空间归一化模型质量的 `groupCandidates`；旧 `candidates` 字段继续表示直选候选，排列五的 `groupCandidates` 固定为空。候选 JSON 新增 `modelWeight` / `compositeModelWeight`；旧 `jointProbability` 与 `probabilityMass` 仅作 deprecated 兼容保留。
 
 ### 数字彩 CSV 标准化
 数字彩来源字段不统一时，可以先用 `digit_data` 标准化：
@@ -175,7 +181,47 @@ reports/data/pl3_daily_<最新期号>.json
 reports/data/pl5_daily_<最新期号>.json
 ```
 
-报告包含最新开奖、位置频率 Top、当前位置遗漏 Top、和值/跨度/形态、奇偶/大小分布、统计候选、候选回测和理性提示。当前数字彩报告只依赖本地 CSV，不自动联网下载；候选生成基于位置频率、当前遗漏和随机扰动，并默认排除上期原号、排除三位豹子、限制常用和值/跨度区间和高重复形态，仍不保证命中。回测只是把当前候选放回历史开奖中检查直选/组选命中情况，不能代表未来表现。
+报告包含最新开奖、位置频率 Top、当前位置遗漏 Top、和值/跨度/形态、奇偶/大小分布、统计候选、候选回测和理性提示。当前数字彩报告只依赖本地 CSV，不自动联网下载；候选生成基于多窗口位置频率、贝叶斯平滑概率、对数压缩遗漏与确定性多样性选择，并默认排除上期原号、排除三位豹子、限制常用和值/跨度区间和高重复形态，仍不保证命中。固定候选回放只适合查看候选覆盖，不能代表未来表现；策略比较应使用下方严格逐期前推命令。
+
+当前候选核心已改为全空间确定性评分，不再依赖随机抽样：三位彩默认允许跨度 1 的组三，但组六因三个数字互异自然至少跨度 2；排列五允许少量“三一一/三二”作为防守形态，并通过配额和排序保持主流形态占多数。遗漏项采用对数压缩和封顶，多窗口权重、频率权重、遗漏权重及多样性权重均可通过 `DigitCandidateConfig` 配置。
+
+### 数字彩严格逐期前推回测
+
+固定“今天的候选”回放整段历史会使用未来统计信息，不能作为策略验证。严格逐期前推会对每个目标期重新训练，且训练集截止到目标期前一期：
+
+```bash
+make digit-walk-forward DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/data.csv DIGIT_WF_PERIODS=50
+make digit-walk-forward DIGIT_LOTTERY=pl3 DIGIT_CSV=data/pl3/data.csv DIGIT_WF_PERIODS=50
+make digit-walk-forward DIGIT_LOTTERY=pl5 DIGIT_CSV=data/pl5/data.csv DIGIT_WF_PERIODS=30
+```
+
+第二轮建议显式启用多随机基线；需要真正外层未见验证时再开启嵌套调参：
+
+```bash
+make digit-walk-forward \
+  DIGIT_LOTTERY=fc3d \
+  DIGIT_CSV=data/fc3d/data.csv \
+  DIGIT_WF_PERIODS=30 \
+  DIGIT_WF_BASELINE_RUNS=20 \
+  DIGIT_WF_NESTED_TUNING=1 \
+  DIGIT_WF_INNER_VALIDATION_PERIODS=10
+```
+
+CLI 等价参数为 `--baseline-runs`、`--nested-tuning`、`--inner-validation-periods` 与 `--report-prefix`。报告以直选/组选命中及其随机基线百分位为主；位置覆盖与 `candidateScorePercentile` 仅是选择器内部诊断。后者采用 mid-rank，所有随机运行分数打平时可能显示 50%，不代表预测优势。任何历史回测结果都不能保证未来中奖，也不得根据外层目标期开奖结果反向选择配置。
+
+也可直接运行：
+
+```bash
+python scripts/digit_walk_forward.py \
+  --lottery fc3d \
+  --csv data/fc3d/data.csv \
+  --periods 50 \
+  --min-train-size 100 \
+  --candidate-count 10 \
+  --output-dir reports/evaluations
+```
+
+每次输出 JSON 与 Markdown，包含目标期数、候选数、直选命中、三位彩组选命中、各位置覆盖、最大连续未中，以及当前统计策略相对 `uniform_random` 的差异。期号必须为纯数字且数值唯一；系统按数值而非字符串排序，因此 `8、9、10、11` 这类非零填充期号也不会把未来期混入训练集，`01` 与 `1` 会被视为重复并拒绝。Makefile 默认写入 `reports/evaluations`，可通过 `DIGIT_WF_OUTPUT_DIR` 覆盖。随机基线使用固定种子保证可复现，但单个小窗口波动很大；任何历史领先都不代表未来有效，更不能保证提高中奖概率或盈利。
 
 ## Vue3 H5 用户端
 项目提供独立的 Vue3 + Vite H5 用户端，目录为 `h5/`。它不是静态 HTML 模板，而是运行时读取 `public/report-data/latest.json` 与 `public/report-data/index.json` 的动态前端工程，适合手机浏览器或微信内 H5 访问。首版采用蓝白用户端风格，并通过底部 Tab 拆分为首页、推荐、回测、策略四个页面；回测与策略页使用 ECharts 展示命中分布和策略收益率；历史期号可点击进入 `/report/:issue` 单独分享页。

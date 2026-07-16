@@ -70,8 +70,13 @@ def test_build_digit_report_data_is_json_friendly():
     assert payload["latestNumbers"] == [1, 2, 3]
     assert "positionFrequency" in payload
     assert len(payload["candidates"]) == 3
+    assert payload["directCandidates"] == payload["candidates"]
+    assert "groupCandidates" in payload
     assert payload["backtest"]["candidateCount"] == 3
     assert payload["artifacts"]["markdown"] == "reports/fc3d_daily_2026002.md"
+    assert payload["candidates"][0]["modelWeight"] > 0
+    assert payload["candidates"][0]["compositeModelWeight"] > 0
+    assert payload["candidates"][0]["jointProbabilityDeprecated"] is True
 
 
 def test_generate_digit_report_from_csv_writes_json_when_enabled(tmp_path: Path):
