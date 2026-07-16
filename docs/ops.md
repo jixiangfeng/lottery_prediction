@@ -11,7 +11,7 @@
   python src/analysis/kl8_analysis.py ...  # 先单次验证，再批量投入
   ```
 
-## 数字彩第二轮运行建议
+## 数字彩闭环运行建议
 
 ```bash
 make digit-walk-forward \
@@ -19,15 +19,25 @@ make digit-walk-forward \
   DIGIT_CSV=data/fc3d/data.csv \
   DIGIT_WF_PERIODS=30 \
   DIGIT_WF_BASELINE_RUNS=20 \
+  DIGIT_WF_ADVANCED_MODELS=1 \
+  DIGIT_WF_COMPARE_WINDOWS=1 \
   DIGIT_WF_NESTED_TUNING=1 \
   DIGIT_WF_INNER_VALIDATION_PERIODS=10
 ```
 
 - 日常快速验证可将 `DIGIT_WF_BASELINE_RUNS` 降为 5；正式比较建议至少 20。
+- Makefile 默认开启蒙特卡洛/ML 票与独立窗口比较；快速冒烟可设 `DIGIT_WF_ADVANCED_MODELS=0 DIGIT_WF_COMPARE_WINDOWS=0`。
+- 高级模型成本可用 `DIGIT_WF_MC_SIMULATIONS`、`DIGIT_WF_ML_TRAINING_PERIODS`、`DIGIT_WF_ML_NEGATIVE_SAMPLES` 调整；报告中必须保留是否启用的状态。
 - 排列五嵌套前推成本最高，先用 5～10 个外层目标期冒烟，再扩大窗口。
 - 使用 `DIGIT_WF_REPORT_PREFIX=second_round` 写入独立文件，避免覆盖既有评估报告。
 - 监控每期 `selectedConfigTrainEndIssue < issue`，若不满足应立即停止使用报告。
+- 监控 `strategyScoreBucketDistributions` 和 `windowComparison`；若真实开奖号长期未进入高分位，不得以候选分数代替命中证据。
 - 结果不超过随机时必须如实保留；本工具不能保证提高中奖概率。
+- `make digit-report` 默认 `DIGIT_RANKING_MODE=ensemble`；切回旧排序时显式设置 `DIGIT_RANKING_MODE=composite`。
+- 结构约束默认 `DIGIT_CONSTRAINT_MODE=soft`；切换 `hard` 前必须使用相同阈值完成严格前推，并监控过滤空间是否过小。
+- 每期快照的 `modelCandidates` 只记录当期实际有分数的模型；ML 未训练或蒙特卡洛关闭时不得生成伪模型复盘样本。
+- 自动调权只使用 `reports/evaluations/<彩种>_live_summary.json` 中有快照证据的逐模型样本；单模型样本不足 5 期保持基础权重。
+- 数字彩日报会写入 `reports/picks/digit`，并把已开奖快照复盘到 `reports/evaluations/<彩种>_<期号>.*`；不得在开奖后删除或改写历史快照再重新统计。
 
 ## 关键监控指标
 | 项目 | 检查方式 | 目标 |

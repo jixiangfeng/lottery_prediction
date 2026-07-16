@@ -1,5 +1,24 @@
 # 本次自动执行报告 | Automation Execution Report
 
+## 2026-07-16 数字彩第三轮算法闭环完善
+- 每期快照新增实际启用子模型各自 TopK；开奖后自动生成 `modelHits/modelPerformance/recommendedModelWeights`，样本少于 5 期不调权，之后加一平滑且单模型最多浮动 20%。
+- 严格前推同步输出逐模型 Top 候选命中；ML 未训练或蒙特卡洛关闭时不会生成伪模型复盘样本。
+- 遗漏升级为与频率窗口一致的多窗口截断特征；日报 JSON/Markdown 显式输出 `omissionWindows`。
+- 新增奇偶/大小/质合历史平滑概率约束，支持 `off|soft|hard`；默认 `soft` 只施加小惩罚，避免过度筛号。
+- 组三/组六分别在各自无序数字集空间重新计算 16 模型分位；蒙特卡洛升级为多窗口边际+位置对条件+形态接受的联合抽样。
+- 数字彩聚焦回归 `62 passed`；8 个核心模块合计覆盖率 `92%` （1767 语句，138 未覆盖）。`black --check`、项目 flake8、相关 `py_compile`、两个 CLI 帮助和 Makefile 命令展开均通过。
+- 仓库仍没有福彩3D/排列三/排列五真实 CSV，未生成新的真实效果结论；全仓 `make ci` 仍受既有 `src/analysis/kl8_analysis_plus.py:994` 语法错误阻断。
+
+## 2026-07-16 数字彩集成投票与真实推荐闭环
+- 在既有全空间评分上补齐质合、连号、镜像、和值尾、上期距离和同位置重号，并接入蒙特卡洛、sklearn 逻辑回归排序器，共 16 个投票器统一转换为过滤空间排名分位后融合。
+- 严格前推新增 `ensemble_voting`，与旧 `current_statistics`、多次 `uniform_random` 使用相同过滤条件、候选数和形态预算进行比较。
+- 新增 `digit_pick_tracking.py`：保存开奖前候选快照，数据更新后自动复盘源期之后第一期开奖，并输出单期 JSON/Markdown 与累计真实命中摘要。
+- 机器学习训练样本严格按时间构建：每个历史正样本和负样本仅使用该目标期之前的统计特征；蒙特卡洛使用相同过滤条件。两者都只参与排序，不作为真实概率。
+- 严格前推新增 30/50/100/300/全历史独立窗口比较；Makefile 默认启用高级模型与窗口比较，可通过变量关闭以控制排列五耗时。
+- 聚焦回归使用隔离 Python 3.12.3、`scikit-learn 1.8.0` 和真实 sklearn 训练执行：`57 passed`，8 个数字彩核心模块合计覆盖率 `93%` （1540 语句，109 未覆盖）。为避免仓库 `.coveragerc` 对 `src/analysis/*` 的既有排除，本次覆盖率命令使用空配置采集。
+- 聚焦 `black --check`、按项目 `.flake8` 执行的 flake8、相关模块 `py_compile`、两个 CLI `--help` 和 `make -n digit-report/digit-walk-forward` 均通过；日报 JSON/Markdown 已抽查 16 模型分位、高级模型证据和推荐留痕字段。
+- 当前环境没有 Conda/Python 3.11，仓库也没有福彩3D/排列三/排列五真实 CSV；因此未生成新的真实前推结论。全仓 `make ci` 仍会被既有 `src/analysis/kl8_analysis_plus.py:994` 的 `global rule_filter` 语法错误阻断，该文件不属于本需求，未修改。
+
 ## 2026-07-16 独立质量审查剩余项修复
 - 严格 TDD：先增加复合模型术语、精确形态预算、默认质量门槛、PL5/三位彩嵌套调参和 Markdown 指标降级测试，并确认 RED。
 - 候选 `score` 明确为重叠特征加权的启发式复合模型分，不是规范联合概率；JSON 新增 `modelWeight` / `compositeModelWeight`，旧 `jointProbability` / `probabilityMass` 仅作 deprecated 兼容。

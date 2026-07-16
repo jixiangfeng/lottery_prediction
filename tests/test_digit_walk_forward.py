@@ -35,13 +35,23 @@ def test_digit_walk_forward_uses_prior_history_only():
     rule = get_lottery_rule("fc3d")
     original = _history()
     changed_future = original.copy()
-    changed_future.loc[changed_future["期数"] == "2026018", ["百位", "十位", "个位"]] = [9, 9, 9]
+    changed_future.loc[
+        changed_future["期数"] == "2026018", ["百位", "十位", "个位"]
+    ] = [9, 9, 9]
 
-    first = run_digit_walk_forward_backtest(original, rule, periods=6, min_train_size=8, candidate_count=12)
-    second = run_digit_walk_forward_backtest(changed_future, rule, periods=6, min_train_size=8, candidate_count=12)
+    first = run_digit_walk_forward_backtest(
+        original, rule, periods=6, min_train_size=8, candidate_count=12
+    )
+    second = run_digit_walk_forward_backtest(
+        changed_future, rule, periods=6, min_train_size=8, candidate_count=12
+    )
 
-    first_issue = next(item for item in first.strategy_summaries[0].issues if item.issue == "2026017")
-    second_issue = next(item for item in second.strategy_summaries[0].issues if item.issue == "2026017")
+    first_issue = next(
+        item for item in first.strategy_summaries[0].issues if item.issue == "2026017"
+    )
+    second_issue = next(
+        item for item in second.strategy_summaries[0].issues if item.issue == "2026017"
+    )
     assert first_issue.candidate_texts == second_issue.candidate_texts
     assert first_issue.train_end_issue == "2026016"
     assert first_issue.train_size == 16
@@ -49,18 +59,34 @@ def test_digit_walk_forward_uses_prior_history_only():
 
 def test_digit_walk_forward_contains_baseline_and_required_metrics(tmp_path):
     rule = get_lottery_rule("fc3d")
-    report = run_digit_walk_forward_backtest(_history(), rule, periods=5, min_train_size=8, candidate_count=10)
+    report = run_digit_walk_forward_backtest(
+        _history(), rule, periods=5, min_train_size=8, candidate_count=10
+    )
 
     assert report.period_count == 5
-    assert {summary.strategy for summary in report.strategy_summaries} == {"current_statistics", "uniform_random"}
+    assert {summary.strategy for summary in report.strategy_summaries} == {
+        "current_statistics",
+        "ensemble_voting",
+        "uniform_random",
+    }
     for summary in report.strategy_summaries:
         assert summary.target_periods == 5
         assert summary.candidate_count == 10
         assert len(summary.position_hit_coverage) == 3
         assert summary.max_direct_miss_streak >= 0
         assert summary.group_hits is not None
-    current = next(summary for summary in report.strategy_summaries if summary.strategy == "current_statistics")
+    current = next(
+        summary
+        for summary in report.strategy_summaries
+        if summary.strategy == "current_statistics"
+    )
+    ensemble = next(
+        summary
+        for summary in report.strategy_summaries
+        if summary.strategy == "ensemble_voting"
+    )
     assert current.relative_to_baseline is not None
+    assert ensemble.relative_to_baseline is not None
     assert "directHitRateDiff" in current.relative_to_baseline
 
     markdown = build_digit_walk_forward_markdown(report)
@@ -69,6 +95,7 @@ def test_digit_walk_forward_contains_baseline_and_required_metrics(tmp_path):
 
     assert "严格逐期前推" in markdown
     assert "uniform_random" in markdown
+    assert "ensemble_voting" in markdown
     assert markdown_path.exists()
     assert payload["periodCount"] == 5
     assert payload["strategies"][0]["issues"]
@@ -106,7 +133,12 @@ def test_pl5_walk_forward_disables_group_metric():
 def test_digit_walk_forward_orders_non_padded_issues_without_future_leakage():
     rule = get_lottery_rule("fc3d")
     rows = [
-        {"期数": str(issue), "百位": issue % 10, "十位": (issue + 1) % 10, "个位": (issue + 2) % 10}
+        {
+            "期数": str(issue),
+            "百位": issue % 10,
+            "十位": (issue + 1) % 10,
+            "个位": (issue + 2) % 10,
+        }
         for issue in range(1, 12)
     ]
     report = run_digit_walk_forward_backtest(
@@ -142,14 +174,24 @@ def test_walk_forward_reports_multi_random_distribution_and_percentile():
     assert 0.0 <= distribution["currentStrategyPercentile"] <= 100.0
     assert 0.0 <= distribution["candidateScorePercentile"] <= 100.0
     assert 0.0 <= distribution["groupHitPercentile"] <= 100.0
-    baseline = next(summary for summary in report.strategy_summaries if summary.strategy == "uniform_random")
-    current = next(summary for summary in report.strategy_summaries if summary.strategy == "current_statistics")
+    baseline = next(
+        summary
+        for summary in report.strategy_summaries
+        if summary.strategy == "uniform_random"
+    )
+    current = next(
+        summary
+        for summary in report.strategy_summaries
+        if summary.strategy == "current_statistics"
+    )
     assert baseline.direct_hits == pytest.approx(distribution["directHits"]["mean"])
     assert baseline.group_hits == pytest.approx(distribution["groupHits"]["mean"])
     assert current.relative_to_baseline["directHitRateDiff"] == pytest.approx(
         current.direct_hit_rate - baseline.direct_hit_rate
     )
-    assert any(summary.strategy == "uniform_random" for summary in report.strategy_summaries)
+    assert any(
+        summary.strategy == "uniform_random" for summary in report.strategy_summaries
+    )
 
     markdown = build_digit_walk_forward_markdown(report)
     assert "选择器内部诊断" in markdown
@@ -158,20 +200,36 @@ def test_walk_forward_reports_multi_random_distribution_and_percentile():
     assert "候选联合概率质量" not in markdown
 
 
-def test_nested_tuning_pl5_uses_final_direct_candidates_not_rank_or_raw_score(monkeypatch):
+def test_nested_tuning_pl5_uses_final_direct_candidates_not_rank_or_raw_score(
+    monkeypatch,
+):
     import src.analysis.digit_walk_forward as module
 
     rule = get_lottery_rule("pl5")
     train = pd.DataFrame(
         [
-            {"期数": str(2026001 + index), "万位": 1, "千位": 2, "百位": 3, "十位": 4, "个位": 5}
+            {
+                "期数": str(2026001 + index),
+                "万位": 1,
+                "千位": 2,
+                "百位": 3,
+                "十位": 4,
+                "个位": 5,
+            }
             for index in range(6)
         ]
     )
     generated_profiles = []
 
-    monkeypatch.setattr(module, "analyze_digit_history", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "rank_digit_numbers_with_eligible_count", lambda *args, **kwargs: (1, 9999.0, 1000), raising=False)
+    monkeypatch.setattr(
+        module, "analyze_digit_history", lambda *args, **kwargs: object()
+    )
+    monkeypatch.setattr(
+        module,
+        "rank_digit_numbers_with_eligible_count",
+        lambda *args, **kwargs: (1, 9999.0, 1000),
+        raising=False,
+    )
 
     def fake_generate(*args, config, **kwargs):
         generated_profiles.append(config.pair_weight)
@@ -194,8 +252,15 @@ def test_nested_tuning_three_digit_uses_final_group_candidates(monkeypatch):
 
     rule = get_lottery_rule("fc3d")
     train = _history(6)
-    monkeypatch.setattr(module, "analyze_digit_history", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "rank_digit_numbers_with_eligible_count", lambda *args, **kwargs: (10, -9999.0, 1000), raising=False)
+    monkeypatch.setattr(
+        module, "analyze_digit_history", lambda *args, **kwargs: object()
+    )
+    monkeypatch.setattr(
+        module,
+        "rank_digit_numbers_with_eligible_count",
+        lambda *args, **kwargs: (10, -9999.0, 1000),
+        raising=False,
+    )
 
     def fake_generate(*args, config, **kwargs):
         group_keys = ["034", "567"] if config.pair_weight == 0.0 else ["789"]
@@ -224,11 +289,20 @@ def test_nested_tuning_records_training_cutoff_before_outer_target():
         inner_validation_periods=4,
     )
 
-    current = next(summary for summary in report.strategy_summaries if summary.strategy == "current_statistics")
+    current = next(
+        summary
+        for summary in report.strategy_summaries
+        if summary.strategy == "current_statistics"
+    )
     assert {issue.selected_config for issue in current.issues} <= {
         "marginal_only",
         "joint_balanced",
         "joint_heavy",
+        "window_30",
+        "window_50",
+        "window_100",
+        "window_300",
+        "window_all",
     }
     for issue in current.issues:
         assert issue.selected_config_train_end_issue < issue.issue
@@ -239,12 +313,68 @@ def test_nested_tuning_records_training_cutoff_before_outer_target():
 def test_walk_forward_keeps_legacy_json_fields_while_adding_quality_metrics():
     rule = get_lottery_rule("fc3d")
     payload = run_digit_walk_forward_backtest(
-        _history(20), rule, periods=2, min_train_size=10, candidate_count=6, baseline_runs=2
+        _history(20),
+        rule,
+        periods=2,
+        min_train_size=10,
+        candidate_count=6,
+        baseline_runs=2,
     ).to_dict()
 
-    assert payload["schemaVersion"] >= 1
+    assert payload["schemaVersion"] == 4
     assert payload["strategies"][0]["issues"][0]["candidateTexts"]
     assert "positionHitCoverage" in payload["strategies"][0]
     assert "randomBaselineDistribution" in payload
+    assert "strategyBaselineDistributions" in payload
+    assert "ensemble_voting" in payload["strategyBaselineDistributions"]
     assert "scoreBucketDistribution" in payload
     assert "meanCandidateScore" in payload["strategies"][0]
+
+
+def test_walk_forward_can_enable_monte_carlo_and_ml_voters_without_future_data():
+    rule = get_lottery_rule("fc3d")
+    report = run_digit_walk_forward_backtest(
+        _history(16),
+        rule,
+        periods=2,
+        min_train_size=10,
+        candidate_count=5,
+        baseline_runs=1,
+        advanced_models=True,
+        monte_carlo_simulations=500,
+        ml_training_periods=3,
+        ml_negative_samples=2,
+    )
+
+    assert report.advanced_models is True
+    assert report.to_dict()["advancedModels"] is True
+    assert report.to_dict()["modelPerformance"]
+    ensemble = next(
+        summary
+        for summary in report.strategy_summaries
+        if summary.strategy == "ensemble_voting"
+    )
+    assert all(issue.train_end_issue < issue.issue for issue in ensemble.issues)
+
+
+def test_walk_forward_compares_requested_independent_windows():
+    rule = get_lottery_rule("fc3d")
+    report = run_digit_walk_forward_backtest(
+        _history(18),
+        rule,
+        periods=2,
+        min_train_size=10,
+        candidate_count=5,
+        baseline_runs=1,
+        compare_windows=True,
+    )
+
+    assert {item["window"] for item in report.window_comparison} == {
+        "30",
+        "50",
+        "100",
+        "300",
+        "all",
+    }
+    assert all(item["targetPeriods"] == 2 for item in report.window_comparison)
+    assert "独立窗口稳定性比较" in build_digit_walk_forward_markdown(report)

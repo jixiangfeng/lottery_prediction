@@ -14,10 +14,11 @@
 - 🎲 `src/analysis/copula_sampler.py`：高斯 Copula 多样性采样，结合互信息惩罚提升组合相关性建模。
 - 🧠 `scripts/train_graph_embeddings.py`：Node2Vec 图嵌入训练脚本，自动识别 CPU / NVIDIA GPU / AMD ROCm 设备。
 - 🧩 `src/lotteries/`：多彩种规则注册表，已定义快乐8、福彩3D、排列三、排列五的号码结构与校验规则。
-- 🔢 `src/analysis/digit_statistics.py`：数字彩通用统计模块，支持福彩3D、排列三、排列五的位置频率、和值、跨度、形态、奇偶大小和遗漏统计。
+- 🔢 `src/analysis/digit_statistics.py`：数字彩通用统计模块，支持位置、位置对、和值、跨度、形态、奇偶/大小/质合、连号、镜像、和值尾、上期距离、同位重号和遗漏统计。
 - 🧹 `src/analysis/digit_data.py`：数字彩 CSV/DataFrame 标准化模块，支持期号/开奖号码列名识别、合并号码拆位、范围校验和按期号排序。
 - 📄 `src/analysis/digit_report.py` / `scripts/digit_report.py`：从本地 CSV 生成福彩3D、排列三、排列五 Markdown 分析日报。
-- 🎯 `src/analysis/digit_candidates.py`：数字彩统计候选生成器，枚举三位 1000 种/五位 100000 种完整空间，按多窗口位置频率、平滑概率和压缩遗漏确定性评分，并进行多样性选择。
+- 🎯 `src/analysis/digit_candidates.py`：枚举三位 1000 种/五位 100000 种完整空间，支持启发式复合分与 16 投票器集成排序，再执行形态配额和确定性多样性选择。
+- 🧠 `src/analysis/digit_advanced_models.py`：统一接入多窗口蒙特卡洛模拟和 sklearn 逻辑回归候选排序，两者均只作排序票。
 - 📈 `src/analysis/digit_backtest.py`：数字彩候选回测模块，支持三位直选/组选命中和排列五直选命中统计。
 - 🧪 `src/analysis/digit_walk_forward.py` / `scripts/digit_walk_forward.py`：严格逐期前推回测，每个目标期只使用此前历史，并与 `uniform_random` 基线对比。
 - 🧪 `tests/`：覆盖配置、特征增强、规则挖掘、Copula 采样等模块的 Pytest 套件。
@@ -84,7 +85,7 @@ rule = get_lottery_rule("fc3d")
 validate_numbers(rule, [1, 1, 1])
 ```
 
-这层只定义玩法元数据和号码校验，不直接承诺预测效果；后续福彩3D、排列三、排列五的数据下载、统计指标和回测奖表会基于该规则层逐步接入。
+这层只定义玩法元数据和号码校验，不直接承诺预测效果；数字彩统计、候选、回测与报告链路通过该规则层共享玩法约束。
 
 ## 数字彩通用统计
 福彩3D、排列三、排列五已经具备通用统计入口：
@@ -106,10 +107,11 @@ stats = analyze_digit_history(df, rule)
 
 ```text
 位置频率
-20/50/100/300 期多窗口位置频率与贝叶斯平滑概率
+30/50/100/300 期多窗口位置频率与贝叶斯平滑概率（日报额外加入当前全历史窗口）
 所有 i<j 位置对的多窗口联合频率与贝叶斯平滑概率
-形态、和值、跨度的多窗口平滑概率
+形态、和值、跨度、奇偶、大小、质合、连号、镜像、和值尾、上期距离、同位重号的多窗口平滑概率
 当前位置遗漏
+与 30/50/100/300/全历史频率窗口一致的截断遗漏
 和值分布
 跨度分布
 形态分布：福彩3D/排列三支持 豹子/组三/组六；排列五支持 五同/四一/三二/三一一/二二一/二一一一/全不同
@@ -118,9 +120,15 @@ stats = analyze_digit_history(df, rule)
 最新期号与最新号码
 ```
 
-这一步仍是历史统计基础设施，不能保证预测命中；后续可在此基础上继续接数字彩数据下载、候选生成、奖表回测和 H5 展示。
+这些特征只描述历史分布，不能保证预测命中；当前数字彩使用本地 CSV，候选生成、回测和报告已接入，自动下载与 H5 展示仍未接入。
 
 第二轮候选评分使用可配置的启发式复合对数分：位置边际、位置对、形态、和值、跨度为主，遗漏仅保留小权重辅助。由于特征存在重叠，该分数不是规范联合概率，也不是实际开奖概率。三位彩额外提供 `directCandidates` 与按无序数字集合聚合过滤空间归一化模型质量的 `groupCandidates`；旧 `candidates` 字段继续表示直选候选，排列五的 `groupCandidates` 固定为空。候选 JSON 新增 `modelWeight` / `compositeModelWeight`；旧 `jointProbability` 与 `probabilityMass` 仅作 deprecated 兼容保留。
+
+当前日报默认使用 16 投票器集成：14 个统计子模型（位置、位置对、形态、和值、跨度、奇偶、大小、质合、连号、镜像、和值尾、上期距离、同位重号、遗漏）加蒙特卡洛和 sklearn 逻辑回归排序器。所有票先在同一过滤空间转为并列中位排名分位，再按固定权重融合。报告输出 `ensembleScore`、`modelRankPercentiles`、`topDecileVotes` 和 `advancedModels` 运行证据；可用 `--no-monte-carlo` / `--no-ml` 关闭高级票，或用 `--ranking-mode composite` 回退旧复合排序作为对照。集成分和分类器分数都不是实际开奖概率。
+
+每期快照会额外保存实际启用子模型各自的 TopK 候选；开奖后累计 `modelPerformance` 并产出建议权重。单模型样本满 5 期后，日报才使用加一平滑结果保守调权，每个模型相对基础权重最多浮动 20%。旧快照没有逐模型字段时保持基础权重。
+
+结构约束默认使用 `soft`：对奇偶、大小、质合的多窗口平滑概率低于 2% 的结构施加小权重惩罚；可通过 `DIGIT_CONSTRAINT_MODE=off|soft|hard`、`DIGIT_CONSTRAINT_PROBABILITY_FLOOR` 和 `DIGIT_CONSTRAINT_PENALTY_WEIGHT` 调整。`hard` 会直接移出低于阈值的候选，应先做严格前推。
 
 ### 数字彩 CSV 标准化
 数字彩来源字段不统一时，可以先用 `digit_data` 标准化：
@@ -168,6 +176,7 @@ python scripts/digit_report.py --lottery pl5 --csv data/pl5/data.csv --json
 ```bash
 make digit-report DIGIT_LOTTERY=pl5 DIGIT_CSV=data/pl5/data.csv
 make digit-report DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/data.csv DIGIT_CANDIDATE_COUNT=20
+make digit-report DIGIT_LOTTERY=pl3 DIGIT_CSV=data/pl3/data.csv DIGIT_RANKING_MODE=composite
 ```
 
 输出路径：
@@ -179,9 +188,15 @@ reports/pl5_daily_<最新期号>.md
 reports/data/fc3d_daily_<最新期号>.json
 reports/data/pl3_daily_<最新期号>.json
 reports/data/pl5_daily_<最新期号>.json
+reports/picks/digit/<彩种>_<源期号>.json
+reports/evaluations/<彩种>_<开奖期号>.md
+reports/evaluations/<彩种>_live_summary.md
 ```
 
-报告包含最新开奖、位置频率 Top、当前位置遗漏 Top、和值/跨度/形态、奇偶/大小分布、统计候选、候选回测和理性提示。当前数字彩报告只依赖本地 CSV，不自动联网下载；候选生成基于多窗口位置频率、贝叶斯平滑概率、对数压缩遗漏与确定性多样性选择，并默认排除上期原号、排除三位豹子、限制常用和值/跨度区间和高重复形态，仍不保证命中。固定候选回放只适合查看候选覆盖，不能代表未来表现；策略比较应使用下方严格逐期前推命令。
+报告包含最新开奖、位置频率 Top、当前位置遗漏 Top、和值/跨度/形态、奇偶/大小分布、集成候选、候选回测和理性提示。每次生成日报会先复盘此前已开奖的推荐快照，再保存当前候选供下一期开奖后核验；累计汇总只统计开奖前已留痕推荐。当前数字彩报告只依赖本地 CSV，不自动联网下载；候选生成默认排除上期原号、排除三位豹子、限制常用和值/跨度区间和高重复形态，仍不保证命中。固定候选回放只适合查看候选覆盖，不能代表未来表现；策略比较应使用下方严格逐期前推命令。
+默认日报会执行 20000 次联合蒙特卡洛模拟：先融合多窗口位置边际分布，再按位置对条件分布逐位抽样，最后使用形态平滑概率接受采样。轻量二分类排序器使用最近 60 个可进入当期候选空间的训练目标；历史不足时 ML 会自动记为未训练。两者均使用固定种子，不直接预测下期号码，也不作概率校准。
+
+三位彩组选不再直接平均直选集成分：组三和组六分别在各自无序数字集合空间内重新计算 16 个模型分位，再执行形态配额。排列五仍只提供直选。
 
 当前候选核心已改为全空间确定性评分，不再依赖随机抽样：三位彩默认允许跨度 1 的组三，但组六因三个数字互异自然至少跨度 2；排列五允许少量“三一一/三二”作为防守形态，并通过配额和排序保持主流形态占多数。遗漏项采用对数压缩和封顶，多窗口权重、频率权重、遗漏权重及多样性权重均可通过 `DigitCandidateConfig` 配置。
 
@@ -195,7 +210,7 @@ make digit-walk-forward DIGIT_LOTTERY=pl3 DIGIT_CSV=data/pl3/data.csv DIGIT_WF_P
 make digit-walk-forward DIGIT_LOTTERY=pl5 DIGIT_CSV=data/pl5/data.csv DIGIT_WF_PERIODS=30
 ```
 
-第二轮建议显式启用多随机基线；需要真正外层未见验证时再开启嵌套调参：
+Makefile 默认开启高级模型、30/50/100/300/全历史独立窗口比较和多随机基线；需要真正外层未见验证时再开启嵌套调参：
 
 ```bash
 make digit-walk-forward \
@@ -207,7 +222,7 @@ make digit-walk-forward \
   DIGIT_WF_INNER_VALIDATION_PERIODS=10
 ```
 
-CLI 等价参数为 `--baseline-runs`、`--nested-tuning`、`--inner-validation-periods` 与 `--report-prefix`。报告以直选/组选命中及其随机基线百分位为主；位置覆盖与 `candidateScorePercentile` 仅是选择器内部诊断。后者采用 mid-rank，所有随机运行分数打平时可能显示 50%，不代表预测优势。任何历史回测结果都不能保证未来中奖，也不得根据外层目标期开奖结果反向选择配置。
+CLI 对应参数为 `--baseline-runs`、`--nested-tuning`、`--inner-validation-periods`、`--advanced-models`、`--monte-carlo-simulations`、`--ml-training-periods`、`--ml-negative-samples`、`--compare-windows`、`--constraint-mode`、`--constraint-probability-floor`、`--constraint-penalty-weight` 与 `--report-prefix`。报告以直选/组选命中及其随机基线百分位为主，同时输出逐模型 TopK 命中、真实开奖号的模型排名分位桶与独立窗口稳定分；位置覆盖与 `candidateScorePercentile` 仅是选择器内部诊断。后者采用 mid-rank，所有随机运行分数打平时可能显示 50%，不代表预测优势。任何历史回测结果都不能保证未来中奖，也不得根据外层目标期开奖结果反向选择配置。
 
 也可直接运行：
 
@@ -221,7 +236,7 @@ python scripts/digit_walk_forward.py \
   --output-dir reports/evaluations
 ```
 
-每次输出 JSON 与 Markdown，包含目标期数、候选数、直选命中、三位彩组选命中、各位置覆盖、最大连续未中，以及当前统计策略相对 `uniform_random` 的差异。期号必须为纯数字且数值唯一；系统按数值而非字符串排序，因此 `8、9、10、11` 这类非零填充期号也不会把未来期混入训练集，`01` 与 `1` 会被视为重复并拒绝。Makefile 默认写入 `reports/evaluations`，可通过 `DIGIT_WF_OUTPUT_DIR` 覆盖。随机基线使用固定种子保证可复现，但单个小窗口波动很大；任何历史领先都不代表未来有效，更不能保证提高中奖概率或盈利。
+每次输出 JSON 与 Markdown，包含目标期数、候选数、直选命中、三位彩组选命中、各位置覆盖、最大连续未中，以及 `current_statistics`、`ensemble_voting` 相对 `uniform_random` 的差异。期号必须为纯数字且数值唯一；系统按数值而非字符串排序，因此 `8、9、10、11` 这类非零填充期号也不会把未来期混入训练集，`01` 与 `1` 会被视为重复并拒绝。Makefile 默认写入 `reports/evaluations`，可通过 `DIGIT_WF_OUTPUT_DIR` 覆盖。随机基线使用固定种子保证可复现，但单个小窗口波动很大；任何历史领先都不代表未来有效，更不能保证提高中奖概率或盈利。
 
 ## Vue3 H5 用户端
 项目提供独立的 Vue3 + Vite H5 用户端，目录为 `h5/`。它不是静态 HTML 模板，而是运行时读取 `public/report-data/latest.json` 与 `public/report-data/index.json` 的动态前端工程，适合手机浏览器或微信内 H5 访问。首版采用蓝白用户端风格，并通过底部 Tab 拆分为首页、推荐、回测、策略四个页面；回测与策略页使用 ECharts 展示命中分布和策略收益率；历史期号可点击进入 `/report/:issue` 单独分享页。

@@ -41,12 +41,21 @@ ranked, debug = compute_enhanced_scores(draws, limit=100, use_pca=True, pca_comp
 > CLI 脚本仍以命令行方式存在；若需在代码中复用，请通过 `subprocess.run([...])` 调用并写明全部参数。
 # 数字彩第二轮 API
 
-- `analyze_digit_history(...)`：保留旧字段，新增 `pair_frequency_windows`、`pair_probabilities`、`shape_probabilities`、`sum_probabilities`、`span_probabilities` 与前三位结构概率；`to_dict()` 使用对应 camelCase 字段。
+- `analyze_digit_history(...)`：保留旧字段，输出位置、位置对、形态、和值、跨度、奇偶、大小、质合、连号、镜像、和值尾、上期距离和同位重号的多窗口平滑概率，以及 `omissionWindows` 多窗口截断遗漏。
 - `score_digit_prefix(stats, numbers, config)`：共享三位前缀启发式复合评分，排列三与排列五前三位均调用该函数；它不是规范联合概率。
-- `generate_digit_candidates(...)`：兼容旧 API，返回的 `candidates` 仍为直选候选。
-- `generate_digit_betting_candidates(...)`：返回 `direct_candidates` 与 `group_candidates`；排列五组选为空。
 - `rank_digit_numbers(...)`：不构造全量候选对象，返回目标号码在过滤空间中的复合模型分排名与评分。
 - 候选 JSON 使用 `modelWeight` 与过滤空间归一化的 `compositeModelWeight`；旧 `jointProbability` / `probabilityMass` 为 deprecated 兼容字段，不表示实际开奖概率。
-- `run_digit_walk_forward_backtest(..., baseline_runs=20, nested_tuning=False, inner_validation_periods=10)`：新增多随机分布与严格嵌套调参。
+- `simulate_digit_candidates(..., pair_strength=0.75, structure_strength=0.35)`：按多窗口边际概率、位置对条件概率和形态接受率联合模拟，通过同一过滤/约束器后返回可复现的候选频率排序。
+- `train_digit_ranker(...)` / `score_digit_ranker(...)`：用 `StandardScaler + LogisticRegression` 构建时间严格的候选二分类排序器；返回分数只作排序。
+- `build_advanced_model_scores(...)`：统一构建蒙特卡洛/ML 外部票及 `DigitAdvancedModelDiagnostics` 运行证据。
+- `run_digit_walk_forward_backtest(..., baseline_runs=20, nested_tuning=False, inner_validation_periods=10, advanced_models=False, compare_windows=False)`：输出多随机分布、严格嵌套调参、可选高级投票和 30/50/100/300/全历史独立窗口比较。
+- `DigitCandidateConfig(ranking_mode="ensemble")`：使用 14 个统计子模型加蒙特卡洛、ML 共 16 个投票位的过滤空间排名分位做集成排序；候选输出 `ensembleScore`、`modelRankPercentiles` 与 `topDecileVotes`。
+- `DigitCandidateConfig(constraint_mode="soft", constraint_probability_floor=0.02, constraint_penalty_weight=0.05)`：提供奇偶/大小/质合结构的 `off|soft|hard` 约束；候选输出 `constraintPenalty`。
+- `generate_digit_candidates(...)`：兼容旧 `candidates` 直选字段；在 `ensemble` 模式下额外返回实际有分数的子模型 `modelCandidates` TopK。
+- `generate_digit_betting_candidates(...)`：返回直选/组选；组三和组六分别在各自无序空间重排模型分位，输出 `rankingModel=shape_specific_ensemble`，排列五组选为空。
+- `save_digit_pick_snapshot(...)` / `process_digit_pick_evaluations(...)`：保存开奖前推荐，并在后续数据中找到源期之后第一期开奖进行自动复盘和累计汇总。
+- `derive_live_ensemble_weights(evaluations, base_weights, min_samples=5)`：只基于开奖前逐模型留痕做加一平滑与±20% 封顶调权。
+
+日报 JSON `schemaVersion=2`，额外输出 `modelCandidates`、`omissionWindows`、`advancedModels` 和 `artifacts.pickSnapshot/liveSummary`；前推 JSON `schemaVersion=4`，额外输出 `modelPerformance`、`strategies`、`strategyScoreBucketDistributions`、`advancedModels` 和 `windowComparison`。
 
 所有评分、排名和回测接口仅用于历史研究，不能保证中奖。

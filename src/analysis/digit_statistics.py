@@ -17,7 +17,7 @@ import pandas as pd
 from src.analysis.digit_data import sort_digit_dataframe_by_issue
 from src.lotteries.base import LotteryRule, validate_numbers
 
-DEFAULT_FREQUENCY_WINDOWS = (20, 50, 100, 300)
+DEFAULT_FREQUENCY_WINDOWS = (30, 50, 100, 300)
 DEFAULT_BAYESIAN_PRIOR_STRENGTH = 2.0
 
 
@@ -37,6 +37,15 @@ class DigitStatisticsResult:
     shape_probabilities: dict[int, dict[str, float]]
     sum_probabilities: dict[int, dict[int, float]]
     span_probabilities: dict[int, dict[int, float]]
+    parity_probabilities: dict[int, dict[str, float]]
+    big_small_probabilities: dict[int, dict[str, float]]
+    prime_composite_probabilities: dict[int, dict[str, float]]
+    consecutive_probabilities: dict[int, dict[int, float]]
+    mirror_probabilities: dict[int, dict[int, float]]
+    sum_tail_probabilities: dict[int, dict[int, float]]
+    latest_distance_probabilities: dict[int, dict[int, float]]
+    repeat_latest_probabilities: dict[int, dict[int, float]]
+    omission_windows: dict[int, dict[str, dict[int, int]]]
     prefix3_shape_probabilities: dict[int, dict[str, float]]
     prefix3_sum_probabilities: dict[int, dict[int, float]]
     prefix3_span_probabilities: dict[int, dict[int, float]]
@@ -56,24 +65,32 @@ class DigitStatisticsResult:
             "drawCount": self.draw_count,
             "totalIssues": self.total_issues,
             "positionFrequency": {
-                position: dict(sorted(counter.items())) for position, counter in self.position_frequency.items()
+                position: dict(sorted(counter.items()))
+                for position, counter in self.position_frequency.items()
             },
             "positionFrequencyWindows": {
                 str(window): {
-                    position: dict(sorted(counter.items())) for position, counter in positions.items()
+                    position: dict(sorted(counter.items()))
+                    for position, counter in positions.items()
                 }
                 for window, positions in self.position_frequency_windows.items()
             },
             "positionProbabilities": {
                 str(window): {
-                    position: {str(digit): probability for digit, probability in sorted(probabilities.items())}
+                    position: {
+                        str(digit): probability
+                        for digit, probability in sorted(probabilities.items())
+                    }
                     for position, probabilities in positions.items()
                 }
                 for window, positions in self.position_probabilities.items()
             },
             "pairFrequencyWindows": {
                 str(window): {
-                    pair: {f"{left},{right}": count for (left, right), count in sorted(counter.items())}
+                    pair: {
+                        f"{left},{right}": count
+                        for (left, right), count in sorted(counter.items())
+                    }
                     for pair, counter in pairs.items()
                 }
                 for window, pairs in self.pair_frequency_windows.items()
@@ -93,23 +110,76 @@ class DigitStatisticsResult:
                 for window, probabilities in self.shape_probabilities.items()
             },
             "sumProbabilities": {
-                str(window): {str(value): probability for value, probability in sorted(probabilities.items())}
+                str(window): {
+                    str(value): probability
+                    for value, probability in sorted(probabilities.items())
+                }
                 for window, probabilities in self.sum_probabilities.items()
             },
             "spanProbabilities": {
-                str(window): {str(value): probability for value, probability in sorted(probabilities.items())}
+                str(window): {
+                    str(value): probability
+                    for value, probability in sorted(probabilities.items())
+                }
                 for window, probabilities in self.span_probabilities.items()
+            },
+            "parityProbabilities": {
+                str(window): dict(sorted(probabilities.items()))
+                for window, probabilities in self.parity_probabilities.items()
+            },
+            "bigSmallProbabilities": {
+                str(window): dict(sorted(probabilities.items()))
+                for window, probabilities in self.big_small_probabilities.items()
+            },
+            "primeCompositeProbabilities": {
+                str(window): dict(sorted(probabilities.items()))
+                for window, probabilities in self.prime_composite_probabilities.items()
+            },
+            "consecutiveProbabilities": {
+                str(window): dict(sorted(probabilities.items()))
+                for window, probabilities in self.consecutive_probabilities.items()
+            },
+            "mirrorProbabilities": {
+                str(window): dict(sorted(probabilities.items()))
+                for window, probabilities in self.mirror_probabilities.items()
+            },
+            "sumTailProbabilities": {
+                str(window): dict(sorted(probabilities.items()))
+                for window, probabilities in self.sum_tail_probabilities.items()
+            },
+            "latestDistanceProbabilities": {
+                str(window): dict(sorted(probabilities.items()))
+                for window, probabilities in self.latest_distance_probabilities.items()
+            },
+            "repeatLatestProbabilities": {
+                str(window): dict(sorted(probabilities.items()))
+                for window, probabilities in self.repeat_latest_probabilities.items()
+            },
+            "omissionWindows": {
+                str(window): {
+                    position: {
+                        str(digit): miss for digit, miss in sorted(values.items())
+                    }
+                    for position, values in positions.items()
+                }
+                for window, positions in self.omission_windows.items()
             },
             "prefix3ShapeProbabilities": {
                 str(window): dict(sorted(probabilities.items()))
                 for window, probabilities in self.prefix3_shape_probabilities.items()
             },
             "prefix3SumProbabilities": {
-                str(window): {str(value): probability for value, probability in sorted(probabilities.items())}
+                str(window): {
+                    str(value): probability
+                    for value, probability in sorted(probabilities.items())
+                }
                 for window, probabilities in self.prefix3_sum_probabilities.items()
             },
             "prefix3SpanProbabilities": {
-                str(window): {str(value): probability for value, probability in sorted(probabilities.items())}
+                str(window): {
+                    str(value): probability
+                    for value, probability in sorted(probabilities.items())
+                }
                 for window, probabilities in self.prefix3_span_probabilities.items()
             },
             "currentOmission": self.current_omission,
@@ -177,7 +247,54 @@ def _big_small_label(numbers: Sequence[int]) -> str:
     return f"大{big}小{small}"
 
 
-def current_digit_omission(df: pd.DataFrame, rule: LotteryRule) -> dict[str, dict[int, int]]:
+def digit_prime_composite_label(numbers: Sequence[int]) -> str:
+    """返回质数、合数和其他数字（0/1）的数量标签。"""
+
+    primes = {2, 3, 5, 7}
+    composites = {4, 6, 8, 9}
+    prime_count = sum(int(number) in primes for number in numbers)
+    composite_count = sum(int(number) in composites for number in numbers)
+    other_count = len(numbers) - prime_count - composite_count
+    return f"质{prime_count}合{composite_count}其他{other_count}"
+
+
+def digit_consecutive_count(numbers: Sequence[int]) -> int:
+    """统计去重排序后相邻差为 1 的连号边数量。"""
+
+    unique = sorted({int(number) for number in numbers})
+    return sum(right - left == 1 for left, right in zip(unique, unique[1:]))
+
+
+def digit_mirror_count(numbers: Sequence[int]) -> int:
+    """统计各位置中和为 9 的镜像数字对数量。"""
+
+    return sum(
+        int(left) + int(right) == 9
+        for left, right in itertools.combinations(numbers, 2)
+    )
+
+
+def digit_sum_tail(numbers: Sequence[int]) -> int:
+    """返回和值尾数。"""
+
+    return sum(int(number) for number in numbers) % 10
+
+
+def digit_latest_distance(numbers: Sequence[int], latest: Sequence[int]) -> int:
+    """返回候选与上期号码的逐位置绝对距离。"""
+
+    return sum(abs(int(left) - int(right)) for left, right in zip(numbers, latest))
+
+
+def digit_repeat_latest_count(numbers: Sequence[int], latest: Sequence[int]) -> int:
+    """返回候选与上期号码同位置重号数量。"""
+
+    return sum(int(left) == int(right) for left, right in zip(numbers, latest))
+
+
+def current_digit_omission(
+    df: pd.DataFrame, rule: LotteryRule
+) -> dict[str, dict[int, int]]:
     """计算每个位置 0-9 的当前遗漏。"""
 
     sorted_df = _sorted_history(df)
@@ -195,6 +312,21 @@ def current_digit_omission(df: pd.DataFrame, rule: LotteryRule) -> dict[str, dic
             position_omission[digit] = miss
         omission[column] = position_omission
     return omission
+
+
+def _multi_window_omission_statistics(
+    sorted_df: pd.DataFrame,
+    rule: LotteryRule,
+    windows: Sequence[int],
+) -> dict[int, dict[str, dict[int, int]]]:
+    """计算每个窗口内截断的当前遗漏，便于区分短期与长期遗漏。"""
+
+    return {
+        max(1, int(window)): current_digit_omission(
+            sorted_df.head(max(1, int(window))), rule
+        )
+        for window in windows
+    }
 
 
 def _multi_window_position_statistics(
@@ -269,6 +401,14 @@ def _multi_window_joint_statistics(
     dict[int, dict[int, float]],
     dict[int, dict[int, float]],
     dict[int, dict[str, float]],
+    dict[int, dict[str, float]],
+    dict[int, dict[str, float]],
+    dict[int, dict[int, float]],
+    dict[int, dict[int, float]],
+    dict[int, dict[int, float]],
+    dict[int, dict[int, float]],
+    dict[int, dict[int, float]],
+    dict[int, dict[str, float]],
     dict[int, dict[int, float]],
     dict[int, dict[int, float]],
 ]:
@@ -279,6 +419,14 @@ def _multi_window_joint_statistics(
     shape_probabilities: dict[int, dict[str, float]] = {}
     sum_probabilities: dict[int, dict[int, float]] = {}
     span_probabilities: dict[int, dict[int, float]] = {}
+    parity_probabilities: dict[int, dict[str, float]] = {}
+    big_small_probabilities: dict[int, dict[str, float]] = {}
+    prime_composite_probabilities: dict[int, dict[str, float]] = {}
+    consecutive_probabilities: dict[int, dict[int, float]] = {}
+    mirror_probabilities: dict[int, dict[int, float]] = {}
+    sum_tail_probabilities: dict[int, dict[int, float]] = {}
+    latest_distance_probabilities: dict[int, dict[int, float]] = {}
+    repeat_latest_probabilities: dict[int, dict[int, float]] = {}
     prefix3_shape_probabilities: dict[int, dict[str, float]] = {}
     prefix3_sum_probabilities: dict[int, dict[int, float]] = {}
     prefix3_span_probabilities: dict[int, dict[int, float]] = {}
@@ -314,7 +462,67 @@ def _multi_window_joint_statistics(
             tuple(range(rule.draw_count * 9 + 1)),
             prior_strength,
         )
-        span_probabilities[window_size] = _smoothed_probabilities(spans, tuple(range(10)), prior_strength)
+        span_probabilities[window_size] = _smoothed_probabilities(
+            spans, tuple(range(10)), prior_strength
+        )
+        parity_probabilities[window_size] = _smoothed_probabilities(
+            [_parity_label(row) for row in rows],
+            tuple(
+                f"奇{odd}偶{rule.draw_count - odd}"
+                for odd in range(rule.draw_count + 1)
+            ),
+            prior_strength,
+        )
+        big_small_probabilities[window_size] = _smoothed_probabilities(
+            [_big_small_label(row) for row in rows],
+            tuple(
+                f"大{big}小{rule.draw_count - big}"
+                for big in range(rule.draw_count + 1)
+            ),
+            prior_strength,
+        )
+        prime_domain = tuple(
+            f"质{prime}合{composite}其他{rule.draw_count - prime - composite}"
+            for prime in range(rule.draw_count + 1)
+            for composite in range(rule.draw_count - prime + 1)
+        )
+        prime_composite_probabilities[window_size] = _smoothed_probabilities(
+            [digit_prime_composite_label(row) for row in rows],
+            prime_domain,
+            prior_strength,
+        )
+        consecutive_probabilities[window_size] = _smoothed_probabilities(
+            [digit_consecutive_count(row) for row in rows],
+            tuple(range(rule.draw_count)),
+            prior_strength,
+        )
+        mirror_probabilities[window_size] = _smoothed_probabilities(
+            [digit_mirror_count(row) for row in rows],
+            tuple(range(rule.draw_count * (rule.draw_count - 1) // 2 + 1)),
+            prior_strength,
+        )
+        sum_tail_probabilities[window_size] = _smoothed_probabilities(
+            [digit_sum_tail(row) for row in rows],
+            tuple(range(10)),
+            prior_strength,
+        )
+        transitions = list(zip(rows, rows[1:]))
+        latest_distance_probabilities[window_size] = _smoothed_probabilities(
+            [
+                digit_latest_distance(current, previous)
+                for current, previous in transitions
+            ],
+            tuple(range(rule.draw_count * 9 + 1)),
+            prior_strength,
+        )
+        repeat_latest_probabilities[window_size] = _smoothed_probabilities(
+            [
+                digit_repeat_latest_count(current, previous)
+                for current, previous in transitions
+            ],
+            tuple(range(rule.draw_count + 1)),
+            prior_strength,
+        )
 
         prefix_rows = [row[:3] for row in rows]
         prefix3_shape_probabilities[window_size] = _smoothed_probabilities(
@@ -339,6 +547,14 @@ def _multi_window_joint_statistics(
         shape_probabilities,
         sum_probabilities,
         span_probabilities,
+        parity_probabilities,
+        big_small_probabilities,
+        prime_composite_probabilities,
+        consecutive_probabilities,
+        mirror_probabilities,
+        sum_tail_probabilities,
+        latest_distance_probabilities,
+        repeat_latest_probabilities,
         prefix3_shape_probabilities,
         prefix3_sum_probabilities,
         prefix3_span_probabilities,
@@ -362,7 +578,9 @@ def analyze_digit_history(
         raise ValueError(f"数字彩统计模块不适用于玩法：{rule.display_name}")
     sorted_df = _sorted_history(df)
     rows = _number_rows(sorted_df, rule)
-    position_frequency: dict[str, Counter[int]] = {column: Counter() for column in rule.number_columns}
+    position_frequency: dict[str, Counter[int]] = {
+        column: Counter() for column in rule.number_columns
+    }
     sum_distribution: Counter[int] = Counter()
     span_distribution: Counter[int] = Counter()
     shape_distribution: Counter[str] = Counter()
@@ -380,11 +598,16 @@ def analyze_digit_history(
 
     latest_numbers = rows[0] if rows else []
     latest_issue = str(sorted_df.iloc[0]["期数"]) if not sorted_df.empty else ""
-    position_frequency_windows, position_probabilities = _multi_window_position_statistics(
-        sorted_df,
-        rule,
-        windows=frequency_windows,
-        prior_strength=max(0.0, float(bayesian_prior_strength)),
+    position_frequency_windows, position_probabilities = (
+        _multi_window_position_statistics(
+            sorted_df,
+            rule,
+            windows=frequency_windows,
+            prior_strength=max(0.0, float(bayesian_prior_strength)),
+        )
+    )
+    omission_windows = _multi_window_omission_statistics(
+        sorted_df, rule, frequency_windows
     )
     (
         pair_frequency_windows,
@@ -392,6 +615,14 @@ def analyze_digit_history(
         shape_probabilities,
         sum_probabilities,
         span_probabilities,
+        parity_probabilities,
+        big_small_probabilities,
+        prime_composite_probabilities,
+        consecutive_probabilities,
+        mirror_probabilities,
+        sum_tail_probabilities,
+        latest_distance_probabilities,
+        repeat_latest_probabilities,
         prefix3_shape_probabilities,
         prefix3_sum_probabilities,
         prefix3_span_probabilities,
@@ -414,6 +645,15 @@ def analyze_digit_history(
         shape_probabilities=shape_probabilities,
         sum_probabilities=sum_probabilities,
         span_probabilities=span_probabilities,
+        parity_probabilities=parity_probabilities,
+        big_small_probabilities=big_small_probabilities,
+        prime_composite_probabilities=prime_composite_probabilities,
+        consecutive_probabilities=consecutive_probabilities,
+        mirror_probabilities=mirror_probabilities,
+        sum_tail_probabilities=sum_tail_probabilities,
+        latest_distance_probabilities=latest_distance_probabilities,
+        repeat_latest_probabilities=repeat_latest_probabilities,
+        omission_windows=omission_windows,
         prefix3_shape_probabilities=prefix3_shape_probabilities,
         prefix3_sum_probabilities=prefix3_sum_probabilities,
         prefix3_span_probabilities=prefix3_span_probabilities,
