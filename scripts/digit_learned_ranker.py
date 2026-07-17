@@ -12,7 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.analysis.digit_data import load_digit_csv  # noqa: E402
+from src.analysis.digit_data import (  # noqa: E402
+    canonical_digit_data_sha256,
+    load_digit_csv,
+    normalize_digit_dataframe,
+    sort_digit_dataframe_by_issue,
+)
 from src.analysis.digit_learned_features import LearnedFeatureConfig  # noqa: E402
 from src.analysis.digit_learned_ranker import (  # noqa: E402
     file_sha256,
@@ -27,6 +32,7 @@ from src.analysis.digit_learned_ranker import (  # noqa: E402
 from src.analysis.digit_learned_ranker_search import (  # noqa: E402
     LearnedSearchConfig,
     LearnedSplit,
+    sample_feature_configs,
     search_learned_ranker_params,
 )
 from src.analysis.digit_learned_ranker_walk_forward import (  # noqa: E402
@@ -42,6 +48,7 @@ def _feature_payload(config: LearnedFeatureConfig) -> dict[str, object]:
         "alpha": config.alpha,
         "halfLife": config.half_life,
         "omissionCap": config.omission_cap,
+        "windowWeights": dict(config.window_weights or ()),
     }
 
 
@@ -97,36 +104,10 @@ def main(argv: list[str] | None = None) -> int:
             else args.evaluation_stride
         )
         feature_config = LearnedFeatureConfig()
-        feature_configs = (
-            (feature_config,)
-            if args.smoke
-            else (
-                LearnedFeatureConfig(
-                    windows=(10, 30, 100, "all"),
-                    half_life=None,
-                    omission_cap=50,
-                ),
-                LearnedFeatureConfig(
-                    windows=(10, 20, 30, 50, 100, 300, "all"),
-                    half_life=None,
-                    omission_cap=50,
-                ),
-                LearnedFeatureConfig(
-                    windows=(10, 20, 30, 50, 100, 300, "all"),
-                    half_life=30,
-                    omission_cap=20,
-                ),
-                LearnedFeatureConfig(
-                    windows=(10, 20, 30, 50, 100, 300, "all"),
-                    half_life=80,
-                    omission_cap=50,
-                ),
-                LearnedFeatureConfig(
-                    windows=(20, 50, 100, "all"),
-                    half_life=150,
-                    omission_cap=80,
-                ),
-            )
+        feature_configs = sample_feature_configs(
+            seed=args.seed,
+            smoke=bool(args.smoke),
+            limit=max(4, min(16, random_trials)),
         )
         config = LearnedSearchConfig(
             split=split,
@@ -137,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             feature_config=feature_config,
             feature_configs=feature_configs,
+            smoke=bool(args.smoke),
         )
         result = search_learned_ranker_params(history, rule, config)
         params_path = (
@@ -147,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         metadata = {
             "ruleCode": rule.code,
             "csvSha256": file_sha256(args.csv),
+            "canonicalDataSha256": canonical_digit_data_sha256(history, rule),
             "sourceFingerprint": learned_ranker_source_fingerprint(),
             "featureConfig": _feature_payload(result.feature_config),
             "split": split.to_dict(),
@@ -180,7 +163,19 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("参数文件未证明 frozen test 未参与选参")
         if metadata.get("ruleCode") not in {None, rule.code}:
             raise ValueError("参数文件玩法与 evaluate 玩法不匹配")
-        if metadata.get("csvSha256") != file_sha256(args.csv):
+        chronological = sort_digit_dataframe_by_issue(
+            normalize_digit_dataframe(history, rule), ascending=True
+        )
+        if split.test_end > len(chronological):
+            raise ValueError("evaluate CSV 少于训练时冻结切分终点")
+        frozen_history = chronological.iloc[: split.test_end]
+        frozen_canonical_sha256 = canonical_digit_data_sha256(frozen_history, rule)
+        if metadata.get("canonicalDataSha256") is not None:
+            if metadata.get("canonicalDataSha256") != frozen_canonical_sha256:
+                raise ValueError(
+                    "evaluate CSV 冻结前缀与训练时 canonical 数据指纹不匹配"
+                )
+        elif metadata.get("csvSha256") != file_sha256(args.csv):
             raise ValueError("evaluate CSV 与训练时冻结 CSV 指纹不匹配")
         source_fingerprint = learned_ranker_source_fingerprint()
         if metadata.get("sourceFingerprint") != source_fingerprint:
@@ -191,7 +186,10 @@ def main(argv: list[str] | None = None) -> int:
             params,
             split,
             feature_config=load_feature_config_from_params(args.params),
-            csv_sha256=str(metadata["csvSha256"]),
+            csv_sha256=(
+                str(metadata["csvSha256"]) if metadata.get("csvSha256") else None
+            ),
+            canonical_data_sha256=frozen_canonical_sha256,
             source_fingerprint=source_fingerprint,
             params_artifact_fingerprint=load_params_artifact_fingerprint(args.params),
             test_segment_used_for_selection=False,

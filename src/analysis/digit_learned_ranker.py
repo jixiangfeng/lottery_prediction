@@ -7,15 +7,23 @@ import hashlib
 import json
 import math
 import os
+import re
 import tempfile
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
-from src.analysis.digit_data import load_digit_csv
+from src.analysis.digit_data import (
+    canonical_digit_data_sha256,
+    load_digit_csv,
+    normalize_digit_dataframe,
+    sort_digit_dataframe_by_issue,
+)
 from src.analysis.digit_learned_features import (
     FEATURE_NAMES,
     LearnedFeatureConfig,
@@ -34,6 +42,29 @@ DEFAULT_WEIGHTS = {
     "span_distribution": 0.2,
     "parity_bigsmall": 0.15,
     "recent_trend": 0.15,
+    "position_trend": 0.05,
+    "pair_trend": 0.05,
+    "sum_trend": 0.03,
+    "span_trend": 0.03,
+    "shape_trend": 0.03,
+    "trend_30_300": 0.05,
+    "trend_50_all": 0.05,
+    "trend_ratio_30_300": 0.03,
+    "position_trend_30_300": 0.02,
+    "pair_trend_30_300": 0.02,
+    "sum_trend_30_300": 0.01,
+    "span_trend_30_300": 0.01,
+    "shape_trend_30_300": 0.01,
+    "position_trend_50_all": 0.02,
+    "pair_trend_50_all": 0.02,
+    "sum_trend_50_all": 0.01,
+    "span_trend_50_all": 0.01,
+    "shape_trend_50_all": 0.01,
+    "position_trend_ratio_30_300": 0.01,
+    "pair_trend_ratio_30_300": 0.01,
+    "sum_trend_ratio_30_300": 0.01,
+    "span_trend_ratio_30_300": 0.01,
+    "shape_trend_ratio_30_300": 0.01,
     "latest_distance": 0.05,
     "repeat_latest": 0.05,
     "omission_rebound": 0.1,
@@ -119,12 +150,32 @@ class LearnedDirectCandidate:
 class LearnedGroupCandidate:
     group_key: str
     shape: str
-    probability: float
+    probability: float | None
+    score: float | None
+    aggregation: str
     permutations: int
     max_permutation_probability: float
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = {
+            "group_key": self.group_key,
+            "shape": self.shape,
+            "aggregation": self.aggregation,
+            "permutations": self.permutations,
+            "max_permutation_probability": self.max_permutation_probability,
+        }
+        if self.probability is not None:
+            payload["probability"] = self.probability
+        if self.score is not None:
+            payload["score"] = self.score
+        return payload
+
+
+def _group_aggregate_value(item: LearnedGroupCandidate) -> float:
+    value = item.probability if item.probability is not None else item.score
+    if value is None:
+        raise ValueError("组选候选缺少 probability/score 聚合值")
+    return float(value)
 
 
 @dataclass(frozen=True)
@@ -167,6 +218,7 @@ def _feature_config_payload(config: LearnedFeatureConfig) -> dict[str, Any]:
         "alpha": config.alpha,
         "halfLife": config.half_life,
         "omissionCap": config.omission_cap,
+        "windowWeights": dict(config.window_weights or ()),
     }
 
 
@@ -195,7 +247,59 @@ def _feature_config_from_metadata(
             float(feature["halfLife"]) if feature.get("halfLife") is not None else None
         ),
         omission_cap=int(feature.get("omissionCap", 50)),
+        window_weights=feature.get("windowWeights"),
     )
+
+
+def resolve_activation(
+    *, common_passed: bool, direct_passed: bool, group_passed: bool
+) -> dict[str, Any]:
+    """按公共闸门与分项命中闸门解析可启用部分。"""
+
+    active_direct = bool(common_passed and direct_passed)
+    active_group = bool(common_passed and group_passed)
+    return {
+        "commonPassed": bool(common_passed),
+        "directPassed": bool(direct_passed),
+        "groupPassed": bool(group_passed),
+        "activeDirect": active_direct,
+        "activeGroup": active_group,
+        "overallPassed": bool(common_passed and direct_passed and group_passed),
+        "overallSemantics": "commonPassed && directPassed && groupPassed（兼容字段）",
+    }
+
+
+def partition_plan_by_activation(
+    plan: Mapping[str, Any], activation: Mapping[str, Any]
+) -> dict[str, Any]:
+    """把通过闸门的部分放入主推荐，其余仅保留为研究结果。"""
+
+    active_direct = bool(activation.get("activeDirect", False))
+    active_group = bool(activation.get("activeGroup", False))
+    direct = list(plan.get("directCandidates", []))
+    groups = list(plan.get("groupCandidates", []))
+    position_pools = list(plan.get("positionPools", []))
+    group_pool = list(plan.get("groupDigitPool", []))
+    output = dict(plan)
+    output.update(
+        {
+            "activeDirect": active_direct,
+            "activeGroup": active_group,
+            "mainRecommendation": {
+                "directCandidates": direct if active_direct else [],
+                "groupCandidates": groups if active_group else [],
+                "positionPools": position_pools if active_direct else [],
+                "groupDigitPool": group_pool if active_group else [],
+            },
+            "research": {
+                "directCandidates": [] if active_direct else direct,
+                "groupCandidates": [] if active_group else groups,
+                "positionPools": [] if active_direct else position_pools,
+                "groupDigitPool": [] if active_group else group_pool,
+            },
+        }
+    )
+    return output
 
 
 def save_params(
@@ -320,12 +424,22 @@ def aggregate_group_candidates(
             LearnedGroupCandidate(
                 group_key=key,
                 shape=classify_digit_shape(tuple(int(value) for value in key)),
-                probability=aggregate,
+                probability=aggregate if aggregation == "sum_prob" else None,
+                score=aggregate if aggregation != "sum_prob" else None,
+                aggregation=aggregation,
                 permutations=len(values),
                 max_permutation_probability=max(values),
             )
         )
-    return tuple(sorted(output, key=lambda item: (-item.probability, item.group_key)))
+    return tuple(
+        sorted(
+            output,
+            key=lambda item: (
+                -_group_aggregate_value(item),
+                item.group_key,
+            ),
+        )
+    )
 
 
 def build_learned_ranker_plan(
@@ -338,7 +452,12 @@ def build_learned_ranker_plan(
 
     if rule.draw_count != 3 or rule.code not in {"fc3d", "pl3"}:
         raise ValueError("learned_ranker_v4 首版只支持 fc3d/pl3")
-    candidates = features["candidate"].astype(str).tolist()
+    features = (
+        features.assign(candidate=features["candidate"].astype(str))
+        .sort_values("candidate", kind="mergesort")
+        .reset_index(drop=True)
+    )
+    candidates = features["candidate"].tolist()
     if not candidates:
         raise ValueError("候选集合不能为空")
     if len(set(candidates)) != len(candidates):
@@ -388,7 +507,9 @@ def build_learned_ranker_plan(
         )
     digit_masses = {
         digit: math.fsum(
-            item.probability for item in groups if str(digit) in item.group_key
+            _group_aggregate_value(item)
+            for item in groups
+            if str(digit) in item.group_key
         )
         for digit in range(10)
     }
@@ -434,11 +555,17 @@ def learned_ranker_source_fingerprint() -> str:
     """计算 v4 核心源码的稳定组合指纹。"""
 
     directory = Path(__file__).resolve().parent
+    lotteries_directory = directory.parent / "lotteries"
     paths = [
+        directory / "digit_data.py",
+        directory / "digit_statistics.py",
         directory / "digit_learned_features.py",
         directory / "digit_learned_ranker.py",
         directory / "digit_learned_ranker_search.py",
         directory / "digit_learned_ranker_walk_forward.py",
+        lotteries_directory / "base.py",
+        lotteries_directory / "fc3d.py",
+        lotteries_directory / "pl3.py",
     ]
     digest = hashlib.sha256()
     for path in paths:
@@ -483,10 +610,171 @@ def _preflight_immutable(path: Path, content: str, *, label: str) -> None:
         raise FileExistsError(f"{label}已存在不同内容，禁止覆盖：{path}")
 
 
+def _snapshot_generated_at(path: Path) -> str:
+    if path.exists():
+        try:
+            value = json.loads(path.read_text(encoding="utf-8")).get("generatedAt")
+            if value:
+                return str(value)
+        except (json.JSONDecodeError, OSError, TypeError):
+            pass
+    return datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
+
+
+def _validate_v4_snapshot(
+    payload: Mapping[str, Any], history: pd.DataFrame, rule: LotteryRule
+) -> tuple[pd.Series | None, str]:
+    if payload.get("rankingMode") != "learned_ranker_v4":
+        raise ValueError("快照不是 learned_ranker_v4")
+    if payload.get("ruleCode") != rule.code:
+        raise ValueError("v4 快照玩法不匹配")
+    if payload.get("immutable") is not True:
+        raise ValueError("v4 快照必须 immutable=true")
+    fingerprint_payload = dict(payload)
+    stored = fingerprint_payload.pop("snapshotFingerprint", None)
+    if stored != payload_fingerprint(fingerprint_payload):
+        raise ValueError("v4 快照 snapshotFingerprint 损坏")
+    chronological = sort_digit_dataframe_by_issue(
+        normalize_digit_dataframe(history, rule), ascending=True
+    )
+    source_issue = str(payload.get("sourceIssue", ""))
+    if not source_issue.isdigit():
+        raise ValueError("v4 快照 sourceIssue 非法")
+    source_history = chronological[
+        chronological["期数"].astype(int) <= int(source_issue)
+    ]
+    if canonical_digit_data_sha256(source_history, rule) != payload.get(
+        "canonicalDataSha256"
+    ):
+        raise ValueError("v4 快照 canonicalDataSha256 与开奖历史不匹配")
+    target_issue = payload.get("targetIssue")
+    if target_issue is not None:
+        matches = chronological[chronological["期数"].astype(str) == str(target_issue)]
+    else:
+        matches = chronological[
+            chronological["期数"].astype(int) > int(source_issue)
+        ].head(1)
+    target = None if matches.empty else matches.iloc[0]
+    dedup_key = payload_fingerprint(
+        {
+            "ruleCode": rule.code,
+            "experimentId": payload.get("experimentId"),
+            "paramsFingerprint": payload.get("paramsFingerprint"),
+            "targetIssue": None if target is None else str(target["期数"]),
+        }
+    )
+    return target, dedup_key
+
+
+def process_learned_ranker_live_evaluations(
+    history: pd.DataFrame,
+    rule: LotteryRule,
+    picks_dir: str | Path,
+    evaluations_dir: str | Path,
+) -> tuple[list[dict[str, Any]], list[Path]]:
+    """复盘 immutable v4 快照，并按实验与参数隔离累计汇总。"""
+
+    picks = Path(picks_dir)
+    output = Path(evaluations_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    evaluations: list[dict[str, Any]] = []
+    if picks.exists():
+        for snapshot_path in sorted(
+            picks.glob(f"{rule.code}_learned_ranker_v4_*.json")
+        ):
+            payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            target, dedup_key = _validate_v4_snapshot(payload, history, rule)
+            if target is None:
+                continue
+            plan = dict(payload.get("candidates", payload.get("plan", {})))
+            activation = dict(payload.get("activation", {}))
+            actual_text = "".join(
+                str(int(target[column])) for column in rule.number_columns
+            )
+            actual_group = "".join(sorted(actual_text))
+            direct = [str(item["text"]) for item in plan.get("directCandidates", [])]
+            groups = [
+                str(item["group_key"]) for item in plan.get("groupCandidates", [])
+            ]
+            evaluation = {
+                "schemaVersion": 1,
+                "evaluationKind": "learned_ranker_v4_live",
+                "ruleCode": rule.code,
+                "experimentId": payload["experimentId"],
+                "paramsFingerprint": payload["paramsFingerprint"],
+                "sourceIssue": str(payload["sourceIssue"]),
+                "targetIssue": str(target["期数"]),
+                "actualText": actual_text,
+                "activation": activation,
+                "directHit": (
+                    actual_text in direct if activation.get("activeDirect") else None
+                ),
+                "groupHit": (
+                    actual_group in groups if activation.get("activeGroup") else None
+                ),
+                "dedupKey": dedup_key,
+                "snapshotFingerprint": payload["snapshotFingerprint"],
+            }
+            evaluation["evaluationFingerprint"] = payload_fingerprint(evaluation)
+            evaluation_path = output / f"{dedup_key}.evaluation.json"
+            serialized = json.dumps(
+                evaluation, ensure_ascii=False, indent=2, sort_keys=True
+            )
+            _preflight_immutable(evaluation_path, serialized, label="v4 实盘评估")
+            _atomic_write(evaluation_path, serialized, immutable=True)
+            evaluations.append(evaluation)
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for item in evaluations:
+        key = (str(item["experimentId"]), str(item["paramsFingerprint"]))
+        grouped.setdefault(key, []).append(item)
+    summary_paths = []
+    for (experiment_id, fingerprint), items in sorted(grouped.items()):
+        ordered = sorted(items, key=lambda item: int(item["targetIssue"]))
+        direct_values = [
+            item["directHit"] for item in ordered if item["directHit"] is not None
+        ]
+        group_values = [
+            item["groupHit"] for item in ordered if item["groupHit"] is not None
+        ]
+        summary = {
+            "schemaVersion": 1,
+            "summaryKind": "learned_ranker_v4_live",
+            "ruleCode": rule.code,
+            "experimentId": experiment_id,
+            "paramsFingerprint": fingerprint,
+            "periodCount": len(ordered),
+            "directEvaluated": len(direct_values),
+            "directHits": sum(bool(value) for value in direct_values),
+            "groupEvaluated": len(group_values),
+            "groupHits": sum(bool(value) for value in group_values),
+            "dedupKeys": [item["dedupKey"] for item in ordered],
+        }
+        summary["summaryFingerprint"] = payload_fingerprint(summary)
+        summary_path = output / (
+            f"{rule.code}_{experiment_id}_{fingerprint[:16]}.summary.json"
+        )
+        _atomic_write(
+            summary_path,
+            json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
+        )
+        summary_paths.append(summary_path)
+    return evaluations, summary_paths
+
+
 def _daily_markdown(payload: Mapping[str, Any]) -> str:
     plan = dict(payload["plan"])
+    direct_heading = (
+        "## 主推荐（直选）"
+        if plan.get("activeDirect")
+        else "## 研究分区（直选，未启用）"
+    )
+    group_heading = (
+        "## 主推荐（组选）"
+        if plan.get("activeGroup")
+        else "## 研究分区（组选，未启用）"
+    )
     lines = [
-        f"# {payload['displayName']} learned_ranker_v4 研究日报",
+        f"# {payload['displayName']} learned_ranker_v4 日报",
         "",
         f"- 状态：**{payload['mode']}**",
         f"- 最新历史期：`{payload['sourceIssue']}`",
@@ -494,7 +782,7 @@ def _daily_markdown(payload: Mapping[str, Any]) -> str:
         f"- CSV SHA-256：`{payload['csvSha256']}`",
         f"- 源码指纹：`{payload['sourceFingerprint']}`",
         "",
-        "## 直选 TopK",
+        direct_heading,
         "",
         "| 排名 | 号码 | 分数 | 归一化概率 | 主要贡献 |",
         "|---:|---|---:|---:|---|",
@@ -511,11 +799,17 @@ def _daily_markdown(payload: Mapping[str, Any]) -> str:
             f"| {index} | `{item['text']}` | {float(item['score']):.6f} | "
             f"{float(item['probability']):.6%} | {contribution_text} |"
         )
-    lines.extend(["", "## 组选 TopK", ""])
+    lines.extend(["", group_heading, ""])
     for index, item in enumerate(plan["groupCandidates"], 1):
+        if item.get("aggregation") == "sum_prob":
+            value_text = f"probability `{float(item['probability']):.6%}`"
+        else:
+            value_text = (
+                f"score `{float(item['score']):.6f}`，aggregation "
+                f"`{item['aggregation']}`"
+            )
         lines.append(
-            f"{index}. `{item['group_key']}`：排列概率和/聚合值 "
-            f"`{float(item['probability']):.6%}`，排列数 `{item['permutations']}`"
+            f"{index}. `{item['group_key']}`：{value_text}，排列数 `{item['permutations']}`"
         )
     recent_evaluation = dict(payload.get("recentEvaluation", {}))
     if recent_evaluation:
@@ -557,7 +851,13 @@ def _validate_frozen_evaluation(
     model_fingerprint: str,
     params_artifact_fingerprint: str,
     source_fingerprint: str,
-) -> tuple[bool, str | None, dict[str, bool], dict[str, dict[str, float | int]]]:
+    canonical_data_sha256: str,
+) -> tuple[
+    dict[str, Any],
+    str | None,
+    dict[str, bool],
+    dict[str, dict[str, float | int]],
+]:
     validation = {
         "exists": path.exists(),
         "readable": False,
@@ -565,12 +865,20 @@ def _validate_frozen_evaluation(
         "paramsMatched": False,
         "paramsArtifactMatched": False,
         "sourceMatched": False,
+        "canonicalMatched": False,
         "fingerprintValid": False,
         "frozenTestMatched": False,
         "promoted": False,
     }
     if not path.exists():
-        return False, None, validation, {}
+        return (
+            resolve_activation(
+                common_passed=False, direct_passed=False, group_passed=False
+            ),
+            None,
+            validation,
+            {},
+        )
     evaluation_fingerprint = file_sha256(path)
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -590,6 +898,9 @@ def _validate_frozen_evaluation(
             evaluation.get("paramsArtifactFingerprint") == params_artifact_fingerprint
         )
         source_matched = evaluation.get("sourceFingerprint") == source_fingerprint
+        canonical_matched = (
+            evaluation.get("canonicalDataSha256") == canonical_data_sha256
+        )
         split = dict(evaluation.get("split", {}))
         expected_indices = list(
             range(
@@ -606,19 +917,38 @@ def _validate_frozen_evaluation(
             and len(periods) == len(expected_indices)
         )
     except (json.JSONDecodeError, TypeError, ValueError, KeyError):
-        return False, evaluation_fingerprint, validation, {}
+        return (
+            resolve_activation(
+                common_passed=False, direct_passed=False, group_passed=False
+            ),
+            evaluation_fingerprint,
+            validation,
+            {},
+        )
     evidence_valid = all(
         (
             rule_matched,
             params_matched,
             params_artifact_matched,
             source_matched,
+            canonical_matched,
             fingerprint_valid,
             frozen_test_matched,
         )
     )
-    gate_passed = (
-        bool(evaluation.get("gate", {}).get("passed", False)) and evidence_valid
+    gate_payload = dict(evaluation.get("gate", {}))
+    evaluation_activation = dict(gate_payload.get("activation", {}))
+    if evaluation_activation:
+        common_passed = bool(evaluation_activation.get("commonPassed", False))
+        direct_passed = bool(evaluation_activation.get("directPassed", False))
+        group_passed = bool(evaluation_activation.get("groupPassed", False))
+    else:
+        legacy_passed = bool(gate_payload.get("passed", False))
+        common_passed = direct_passed = group_passed = legacy_passed
+    activation = resolve_activation(
+        common_passed=bool(common_passed and evidence_valid),
+        direct_passed=bool(direct_passed and evidence_valid),
+        group_passed=bool(group_passed and evidence_valid),
     )
     validation = {
         "exists": True,
@@ -627,9 +957,10 @@ def _validate_frozen_evaluation(
         "paramsMatched": params_matched,
         "paramsArtifactMatched": params_artifact_matched,
         "sourceMatched": source_matched,
+        "canonicalMatched": canonical_matched,
         "fingerprintValid": fingerprint_valid,
         "frozenTestMatched": frozen_test_matched,
-        "promoted": gate_passed,
+        "promoted": bool(activation["overallPassed"]),
     }
     recent_evaluation: dict[str, dict[str, float | int]] = {}
     if evidence_valid:
@@ -651,7 +982,7 @@ def _validate_frozen_evaluation(
                 ),
                 "meanRank": float(np.mean(ranks)) if ranks else 0.0,
             }
-    return gate_passed, evaluation_fingerprint, validation, recent_evaluation
+    return activation, evaluation_fingerprint, validation, recent_evaluation
 
 
 def generate_learned_ranker_daily(
@@ -673,6 +1004,7 @@ def generate_learned_ranker_daily(
     if history.empty:
         raise ValueError("历史 CSV 不能为空")
     params = load_params(params_path)
+    params_metadata = load_params_metadata(params_path)
     feature_config = load_feature_config_from_params(params_path)
     params_artifact_fingerprint = load_params_artifact_fingerprint(params_path)
     current_params_fingerprint = params_fingerprint(params, feature_config)
@@ -680,14 +1012,34 @@ def generate_learned_ranker_daily(
     features = build_candidate_features(state, rule)
     plan = build_learned_ranker_plan(features, params, rule, feature_config)
     report_dir = Path(output_dir)
+    process_learned_ranker_live_evaluations(
+        history,
+        rule,
+        report_dir / "picks" / "digit",
+        report_dir / "evaluations" / "learned_ranker_v4_live",
+    )
     effective_evaluation = (
         Path(evaluation_path)
         if evaluation_path is not None
         else report_dir / "evaluations" / f"learned_ranker_v4_{rule.code}.json"
     )
     source_fingerprint = learned_ranker_source_fingerprint()
+    canonical_data_sha256 = canonical_digit_data_sha256(history, rule)
+    frozen_data_canonical_sha256 = canonical_data_sha256
+    split_payload = params_metadata.get("split")
+    if isinstance(split_payload, Mapping) and split_payload.get("testEnd") is not None:
+        test_end = int(split_payload["testEnd"])
+        chronological = sort_digit_dataframe_by_issue(
+            normalize_digit_dataframe(history, rule), ascending=True
+        )
+        if test_end <= 0 or test_end > len(chronological):
+            frozen_data_canonical_sha256 = ""
+        else:
+            frozen_data_canonical_sha256 = canonical_digit_data_sha256(
+                chronological.iloc[:test_end], rule
+            )
     (
-        gate_passed,
+        activation,
         evaluation_fingerprint,
         evaluation_validation,
         recent_evaluation,
@@ -697,18 +1049,55 @@ def generate_learned_ranker_daily(
         model_fingerprint=current_params_fingerprint,
         params_artifact_fingerprint=params_artifact_fingerprint,
         source_fingerprint=source_fingerprint,
+        canonical_data_sha256=frozen_data_canonical_sha256,
     )
-    mode = "冻结测试闸门已通过" if gate_passed else "研究模式，不接入主推荐"
+    gate_passed = bool(activation["overallPassed"])
+    if activation["activeDirect"] and activation["activeGroup"]:
+        mode = "直选与组选冻结测试闸门已通过"
+    elif activation["activeDirect"]:
+        mode = "仅直选启用；组选保持研究"
+    elif activation["activeGroup"]:
+        mode = "仅组选启用；直选保持研究"
+    else:
+        mode = "研究模式，不接入主推荐"
+    experiment_id = str(
+        params_metadata.get(
+            "experimentId", f"learned_ranker_v4_{rule.code}_{params.random_seed}"
+        )
+    )
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", experiment_id):
+        raise ValueError("experimentId 只允许字母、数字、下划线和连字符")
+    artifact_segment = f"_{experiment_id}_{current_params_fingerprint[:12]}"
+    snapshot_path = (
+        report_dir
+        / "picks"
+        / "digit"
+        / (
+            f"{rule.code}_learned_ranker_v4{artifact_segment}_"
+            f"{state.history_end_issue}.json"
+        )
+    )
     payload = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
+        "modelVersion": "learned_ranker_v4",
         "rankingMode": "learned_ranker_v4",
+        "experimentId": experiment_id,
         "ruleCode": rule.code,
         "displayName": rule.display_name,
         "sourceIssue": state.history_end_issue,
+        "targetIssue": None,
+        "nextIssueInterpretation": "当前不能可靠推导下一期号；后续数据中取 sourceIssue 之后按数值期号排序的第一期。",
+        "generatedAt": _snapshot_generated_at(snapshot_path),
+        "immutable": True,
         "historyPeriods": len(state.numbers),
         "mode": mode,
         "gatePassed": gate_passed,
+        "directPassed": bool(activation["directPassed"]),
+        "groupPassed": bool(activation["groupPassed"]),
+        "activation": activation,
         "csvSha256": file_sha256(csv_path),
+        "canonicalDataSha256": canonical_data_sha256,
+        "frozenDataCanonicalSha256": frozen_data_canonical_sha256,
         "sourceFingerprint": source_fingerprint,
         "paramsFingerprint": current_params_fingerprint,
         "paramsArtifactFingerprint": params_artifact_fingerprint,
@@ -720,22 +1109,23 @@ def generate_learned_ranker_daily(
             "alpha": feature_config.alpha,
             "halfLife": feature_config.half_life,
             "omissionCap": feature_config.omission_cap,
+            "windowWeights": dict(feature_config.window_weights or ()),
         },
-        "plan": plan.to_dict(),
+        "plan": partition_plan_by_activation(plan.to_dict(), activation),
         "disclaimer": "开奖结果具有随机性；不宣称预测有效，不保证中奖或盈利。",
     }
+    payload["candidates"] = payload["plan"]
+    payload["snapshotFingerprint"] = payload_fingerprint(payload)
     serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     daily_dir = report_dir / "learned_ranker_v4_daily"
-    markdown_path = daily_dir / f"{rule.code}_daily_{state.history_end_issue}.md"
-    json_path = daily_dir / f"{rule.code}_daily_{state.history_end_issue}.json"
-    snapshot_path = (
-        report_dir
-        / "picks"
-        / "digit"
-        / f"{rule.code}_learned_ranker_v4_{state.history_end_issue}.json"
-    )
+    daily_stem = f"{rule.code}{artifact_segment}_daily_{state.history_end_issue}"
+    markdown_path = daily_dir / f"{daily_stem}.md"
+    json_path = daily_dir / f"{daily_stem}.json"
+    markdown = _daily_markdown(payload)
     _preflight_immutable(snapshot_path, serialized, label="冻结快照")
-    _atomic_write(markdown_path, _daily_markdown(payload))
+    _preflight_immutable(markdown_path, markdown, label="v4 日报")
+    _preflight_immutable(json_path, serialized, label="v4 日报")
+    _atomic_write(markdown_path, markdown)
     _atomic_write(json_path, serialized)
     _atomic_write(snapshot_path, serialized, immutable=True)
     return markdown_path, json_path, snapshot_path

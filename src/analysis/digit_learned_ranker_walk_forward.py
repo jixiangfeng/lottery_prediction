@@ -31,6 +31,7 @@ from src.analysis.digit_learned_ranker import (
     payload_fingerprint,
     probabilities_from_scores,
     rank_candidate_indices,
+    resolve_activation,
     score_candidates,
 )
 from src.analysis.digit_learned_ranker_search import LearnedSplit
@@ -83,11 +84,19 @@ class LearnedRankerReport:
     gate_passed: bool
     gate_reasons: tuple[str, ...]
     csv_sha256: str | None = None
+    canonical_data_sha256: str | None = None
     source_fingerprint: str | None = None
     params_artifact_fingerprint: str | None = None
     test_segment_used_for_selection: bool = False
 
     def to_dict(self) -> dict[str, Any]:
+        gate = build_gate_result(
+            mean_rank=self.mean_rank,
+            mean_log_loss=self.mean_log_loss,
+            direct_p_value=self.direct_p_value,
+            group_p_value=self.group_p_value,
+            stable_blocks=self.stable_blocks,
+        )
         payload = {
             "schemaVersion": 1,
             "evaluationKind": "frozen_test",
@@ -96,6 +105,7 @@ class LearnedRankerReport:
             "paramsFingerprint": self.params_fingerprint,
             "paramsArtifactFingerprint": self.params_artifact_fingerprint,
             "csvSha256": self.csv_sha256,
+            "canonicalDataSha256": self.canonical_data_sha256,
             "sourceFingerprint": self.source_fingerprint,
             "testSegmentUsedForSelection": self.test_segment_used_for_selection,
             "split": self.split.to_dict(),
@@ -119,7 +129,7 @@ class LearnedRankerReport:
                 "blockMeanRanks": list(self.block_mean_ranks),
                 "stableBlocks": self.stable_blocks,
             },
-            "gate": {"passed": self.gate_passed, "reasons": list(self.gate_reasons)},
+            "gate": gate,
             "disclaimer": "开奖结果具有随机性；评估不构成预测有效、中奖或盈利承诺。",
         }
         payload["reportFingerprint"] = payload_fingerprint(payload)
@@ -139,6 +149,11 @@ def _period(
         chronological.iloc[:index], rule, feature_config, target_issue=target_issue
     )
     features = build_candidate_features(state, rule)
+    features = (
+        features.assign(candidate=features["candidate"].astype(str))
+        .sort_values("candidate", kind="mergesort")
+        .reset_index(drop=True)
+    )
     texts = features["candidate"].astype(str).tolist()
     scores = score_candidates(features, params)
     probabilities = probabilities_from_scores(scores, temperature=params.temperature)
@@ -193,6 +208,43 @@ def _gate_reasons(
     return tuple(reasons)
 
 
+def build_gate_result(
+    *,
+    mean_rank: float,
+    mean_log_loss: float,
+    direct_p_value: float,
+    group_p_value: float,
+    stable_blocks: int,
+) -> dict[str, Any]:
+    """拆分公共概率/稳定性、直选命中和组选命中闸门。"""
+
+    common_reasons = []
+    if mean_rank >= 500.5:
+        common_reasons.append("平均真实号排名未优于均匀随机中位排名")
+    if mean_log_loss > math.log(1000):
+        common_reasons.append("LogLoss 差于均匀分布")
+    if stable_blocks < 2:
+        common_reasons.append("至少三个时间块中未达到两个稳定优势块")
+    direct_reasons = (
+        ["直选 TopK 单侧 p 值未小于 0.05"] if direct_p_value >= 0.05 else []
+    )
+    group_reasons = ["组选 TopK 单侧 p 值未小于 0.05"] if group_p_value >= 0.05 else []
+    activation = resolve_activation(
+        common_passed=not common_reasons,
+        direct_passed=not direct_reasons,
+        group_passed=not group_reasons,
+    )
+    return {
+        "passed": activation["overallPassed"],
+        "semantics": activation["overallSemantics"],
+        "reasons": [*common_reasons, *direct_reasons, *group_reasons],
+        "common": {"passed": not common_reasons, "reasons": common_reasons},
+        "direct": {"passed": not direct_reasons, "reasons": direct_reasons},
+        "group": {"passed": not group_reasons, "reasons": group_reasons},
+        "activation": activation,
+    }
+
+
 def run_learned_ranker_walk_forward(
     history: pd.DataFrame,
     rule: LotteryRule,
@@ -201,6 +253,7 @@ def run_learned_ranker_walk_forward(
     *,
     feature_config: LearnedFeatureConfig | None = None,
     csv_sha256: str | None = None,
+    canonical_data_sha256: str | None = None,
     source_fingerprint: str | None = None,
     params_artifact_fingerprint: str | None = None,
     test_segment_used_for_selection: bool = False,
@@ -269,6 +322,7 @@ def run_learned_ranker_walk_forward(
         gate_passed=not reasons,
         gate_reasons=reasons,
         csv_sha256=csv_sha256,
+        canonical_data_sha256=canonical_data_sha256,
         source_fingerprint=source_fingerprint,
         params_artifact_fingerprint=params_artifact_fingerprint,
         test_segment_used_for_selection=test_segment_used_for_selection,

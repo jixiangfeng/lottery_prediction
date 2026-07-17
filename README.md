@@ -87,10 +87,10 @@ v4 首版只支持 `fc3d` 和 `pl3`；`pl5` 会明确拒绝并保持旧路径。
 
 - `reports/state/learned_ranker_v4/<彩种>_params.json`：参数、搜索证据、CSV/源码/参数指纹。
 - `reports/evaluations/learned_ranker_v4_<彩种>.md/.json`：冻结测试 LogLoss、Brier、排名、TopK、精确组选随机基线、p 值和分块闸门。
-- `reports/learned_ranker_v4_daily/<彩种>_daily_<期号>.md/.json`：直选/组选、位置池、组选数字池和研究状态。
-- `reports/picks/digit/<彩种>_learned_ranker_v4_<源期号>.json`：内容不同即拒绝覆盖的冻结快照。
+- `reports/learned_ranker_v4_daily/<彩种>_<实验ID>_<参数指纹前缀>_daily_<期号>.md/.json`：直选/组选、位置池、组选数字池和分项激活状态。
+- `reports/picks/digit/<彩种>_learned_ranker_v4_<实验ID>_<参数指纹前缀>_<源期号>.json`：按实验与参数隔离、内容不同即拒绝覆盖的冻结快照。
 
-只有冻结测试 JSON 的全部预设闸门通过时，日报才会显示通过；否则必须写明“研究模式，不接入主推荐”。归一化概率只是评分转化，不是实际开奖概率，不保证中奖或盈利。
+公共概率/稳定性闸门通过后，直选和组选按各自命中闸门独立启用；未通过部分必须留在研究分区。归一化概率只是评分转化，不是实际开奖概率，不保证中奖或盈利。
 
 ## 严格前推
 
@@ -140,7 +140,7 @@ v4 首版只支持 `fc3d` 和 `pl3`；`pl5` 会明确拒绝并保持旧路径。
 | DIGIT_FETCH_PERIODS | 1000 | 显式抓取最近期数，仅支持 fc3d、pl3 |
 | DIGIT_CANDIDATE_COUNT | 10 | 候选注数 |
 | DIGIT_FREEZE_PICK | 0 | 设为1时冻结同源期推荐快照，禁止覆盖 |
-| DIGIT_RANKING_MODE | ensemble | ensemble、composite、probability 或 online_probability |
+| DIGIT_RANKING_MODE | ensemble | ensemble、composite、probability、online_probability 或 learned_ranker_v4 |
 | DIGIT_ENABLE_MONTE_CARLO | 1 | 是否启用蒙特卡洛票 |
 | DIGIT_ENABLE_ML | 1 | 是否启用逻辑回归票 |
 | DIGIT_CONSTRAINT_MODE | soft | off、soft、hard |
@@ -177,3 +177,13 @@ make ci 会执行 Black/isort 检查、flake8、mypy、Pytest 覆盖率和语法
 4. 候选分是否是概率：复合分、集成分和模型权重不是概率；只有 probability 或 online_probability 模式的 `predictedProbability` 是和为1分布中的概率，守门失败或在线模型无增量时会接近均匀概率。
 5. 回测能否证明未来有效：不能。只有严格前推和开奖前留痕能减少数据泄漏，仍无法消除随机波动。
 6. 什么情况下算法可投入候选实验：只有前推报告中的对应策略显示“通过”才具备统计实验资格；“不通过”时应保持观察，不能提高投注金额。
+
+## learned_ranker_v4 完整化说明
+
+- 首版仅支持 `fc3d`、`pl3`，`pl5` 会明确拒绝；旧 `ensemble/probability/online_probability` 默认行为不变。
+- 特征使用 `10/20/30/50/100/300/all` 独立窗口权重；position、pair、sum、span、shape 分别保留 `30-300` 差、`50-all` 差和 `30/300` log-ratio，聚合趋势只作为兼容摘要。
+- 正式搜索 manifest 声明特征权重边界、窗口集合/权重 profile、alpha、half-life、omission cap、temperature、组选聚合、归一化方式及固定同成本推荐配置；单次运行使用 seed 驱动的有界采样与惰性特征准备，不声称穷举整个笛卡尔积。
+- 冻结闸门拆分为公共概率/稳定性、直选命中、组选命中；只有公共闸门与对应分项闸门同时通过，才进入 `mainRecommendation`，失败部分仅显示在研究分区。
+- v4 快照包含实验、参数、当前 canonical 数据、冻结前缀、源码、激活状态和候选指纹；新增开奖只改变当前历史指纹，不会撤销冻结前缀证据，修改冻结前缀则会关闭激活。
+- `sum_prob` 才输出组选 probability；`max_perm/mean_top_perm` 仅输出 score 与 aggregation，不解释为真实概率。
+- 本地已获取并校验 fc3d/pl3 各 1000 期官方历史；最终源码 smoke 选参后的完整 250 期冻结测试中，两种彩票 LogLoss 均劣于均匀分布且直选/组选 p 值均未过闸门，因此当前全部保持研究模式。默认正式搜索预算仍可继续研究，但不得把搜索次数包装成效果证据。

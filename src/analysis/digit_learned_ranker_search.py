@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass, replace
 from typing import Sequence
@@ -28,6 +29,99 @@ from src.analysis.digit_learned_ranker import (
     score_candidates,
 )
 from src.lotteries.base import LotteryRule
+
+FULL_HALF_LIVES = (None, 20, 30, 50, 80, 100, 150, 200)
+FULL_OMISSION_CAPS = (20, 30, 50, 80)
+FULL_TEMPERATURES = (0.1, 0.2, 0.5, 1.0, 2.0)
+FULL_ALPHAS = (0.5, 1.0, 2.0, 5.0)
+FULL_WINDOW_SETS = (
+    (10, 20, 30, 50, 100, 300, "all"),
+    (20, 30, 50, 100, 300, "all"),
+    (30, 50, 100, 300, "all"),
+)
+FULL_GROUP_AGGREGATIONS = ("sum_prob", "max_perm", "mean_top_perm")
+WINDOW_WEIGHT_PROFILES = {
+    "balanced": {"10": 1, "20": 1, "30": 1, "50": 1, "100": 1, "300": 1, "all": 1},
+    "recent_heavy": {"10": 6, "20": 5, "30": 4, "50": 3, "100": 2, "300": 1, "all": 1},
+    "medium_heavy": {"10": 1, "20": 2, "30": 3, "50": 4, "100": 4, "300": 2, "all": 1},
+    "long_stable": {"10": 1, "20": 1, "30": 1, "50": 2, "100": 3, "300": 5, "all": 6},
+}
+
+
+def build_search_space_manifest(*, smoke: bool) -> dict[str, object]:
+    """记录完整正式空间；smoke 只改变采样预算，不删减空间声明。"""
+
+    space = {
+        "halfLife": list(FULL_HALF_LIVES),
+        "omissionCap": list(FULL_OMISSION_CAPS),
+        "temperature": list(FULL_TEMPERATURES),
+        "alpha": list(FULL_ALPHAS),
+        "windowSets": [list(values) for values in FULL_WINDOW_SETS],
+        "groupAggregation": list(FULL_GROUP_AGGREGATIONS),
+        "featureNormalization": "robust_zscore",
+        "featureWeightRanges": {
+            name: (
+                {"minimum": -1.5, "maximum": 0.0}
+                if name == "constraint_penalty"
+                else {"minimum": -1.5, "maximum": 1.5}
+            )
+            for name in DEFAULT_WEIGHTS
+        },
+        "recommendationConfig": {
+            "directTopK": [10],
+            "groupTopK": [10],
+            "positionPoolSize": [5],
+            "groupDigitPoolSize": [7],
+        },
+        "windowWeightProfiles": [
+            {"name": name, "weights": weights}
+            for name, weights in WINDOW_WEIGHT_PROFILES.items()
+        ],
+    }
+    return {
+        **space,
+        "space": space,
+        "sampling": {
+            "deterministic": True,
+            "materializesFullCartesianProduct": False,
+            "strategy": "seeded staged sampling with per-feature-config lazy preparation",
+            "mode": "smoke" if smoke else "formal",
+        },
+    }
+
+
+def sample_feature_configs(
+    *, seed: int, smoke: bool, limit: int | None = None
+) -> tuple[LearnedFeatureConfig, ...]:
+    """从完整空间做确定性有界采样，不预计算各配置特征矩阵。"""
+
+    if smoke:
+        return (LearnedFeatureConfig(),)
+    combinations = list(
+        itertools.product(
+            FULL_WINDOW_SETS,
+            FULL_ALPHAS,
+            FULL_HALF_LIVES,
+            FULL_OMISSION_CAPS,
+            WINDOW_WEIGHT_PROFILES.items(),
+        )
+    )
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(len(combinations))
+    sample_size = min(limit or 16, len(combinations))
+    selected = []
+    for index in order[:sample_size]:
+        windows, alpha, half_life, omission_cap, (_, weights) = combinations[int(index)]
+        selected.append(
+            LearnedFeatureConfig(
+                windows=windows,
+                alpha=alpha,
+                half_life=half_life,
+                omission_cap=omission_cap,
+                window_weights={str(value): weights[str(value)] for value in windows},
+            )
+        )
+    return tuple(selected)
 
 
 @dataclass(frozen=True)
@@ -70,6 +164,7 @@ class LearnedSearchConfig:
     seed: int = 20260717
     feature_config: LearnedFeatureConfig = LearnedFeatureConfig()
     feature_configs: tuple[LearnedFeatureConfig, ...] | None = None
+    smoke: bool = False
 
     def __post_init__(self) -> None:
         if self.min_train_size <= 0 or self.evaluation_stride <= 0:
@@ -95,6 +190,7 @@ class LearnedSearchTrial:
                 "alpha": self.feature_config.alpha,
                 "halfLife": self.feature_config.half_life,
                 "omissionCap": self.feature_config.omission_cap,
+                "windowWeights": dict(self.feature_config.window_weights or ()),
             },
             "searchObjective": self.search_objective,
             "validationObjective": self.validation_objective,
@@ -111,6 +207,7 @@ class LearnedSearchResult:
     trials: tuple[LearnedSearchTrial, ...]
     selection_target_indices: tuple[int, ...]
     test_segment_used_for_selection: bool = False
+    search_space_manifest: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -120,6 +217,7 @@ class LearnedSearchResult:
                 "alpha": self.feature_config.alpha,
                 "halfLife": self.feature_config.half_life,
                 "omissionCap": self.feature_config.omission_cap,
+                "windowWeights": dict(self.feature_config.window_weights or ()),
             },
             "searchObjective": self.search_objective,
             "validationObjective": self.validation_objective,
@@ -127,6 +225,8 @@ class LearnedSearchResult:
             "trials": [item.to_dict() for item in self.trials],
             "selectionTargetIndices": list(self.selection_target_indices),
             "testSegmentUsedForSelection": self.test_segment_used_for_selection,
+            "searchSpaceManifest": self.search_space_manifest
+            or build_search_space_manifest(smoke=False),
         }
 
 
@@ -228,8 +328,8 @@ def _random_params(rng: np.random.Generator) -> LearnedRankerParams:
     weights["constraint_penalty"] = -abs(weights["constraint_penalty"])
     return LearnedRankerParams(
         weights=weights,
-        temperature=float(rng.choice([0.1, 0.2, 0.5, 1.0, 2.0])),
-        group_aggregation=str(rng.choice(["sum_prob", "max_perm", "mean_top_perm"])),
+        temperature=float(rng.choice(FULL_TEMPERATURES)),
+        group_aggregation=str(rng.choice(FULL_GROUP_AGGREGATIONS)),
         random_seed=int(rng.integers(0, 2**31 - 1)),
     )
 
@@ -242,7 +342,7 @@ def _local_params(
         for name, value in base.weights.items()
     }
     weights["constraint_penalty"] = -abs(weights["constraint_penalty"])
-    temperatures = [0.1, 0.2, 0.5, 1.0, 2.0]
+    temperatures = list(FULL_TEMPERATURES)
     current = min(
         range(len(temperatures)),
         key=lambda index: abs(temperatures[index] - base.temperature),
@@ -287,28 +387,28 @@ def search_learned_ranker_params(
     if not search_indices or not validation_indices:
         raise ValueError("search 和 validation 均需至少一个前向目标期")
     feature_configs = search_config.feature_configs or (search_config.feature_config,)
-    prepared = {
-        feature_config: (
-            _prepare_targets(chronological, rule, search_indices, feature_config),
-            _prepare_targets(chronological, rule, validation_indices, feature_config),
-        )
-        for feature_config in feature_configs
-    }
     rng = np.random.default_rng(search_config.seed)
     candidates = [
         LearnedRankerParams(),
         *[_random_params(rng) for _ in range(search_config.random_trials)],
     ]
-    coarse = [
-        LearnedSearchTrial(
-            params,
-            feature_config,
-            _objective(prepared[feature_config][0], params),
-            _objective(prepared[feature_config][1], params),
+    coarse: list[LearnedSearchTrial] = []
+    for feature_config in feature_configs:
+        prepared_search = _prepare_targets(
+            chronological, rule, search_indices, feature_config
         )
-        for feature_config in feature_configs
-        for params in candidates
-    ]
+        prepared_validation = _prepare_targets(
+            chronological, rule, validation_indices, feature_config
+        )
+        coarse.extend(
+            LearnedSearchTrial(
+                params,
+                feature_config,
+                _objective(prepared_search, params),
+                _objective(prepared_validation, params),
+            )
+            for params in candidates
+        )
     search_best = max(
         coarse,
         key=lambda item: item.search_objective,
@@ -317,12 +417,18 @@ def search_learned_ranker_params(
         _local_params(search_best.params, rng)
         for _ in range(search_config.local_trials)
     ]
+    local_search_targets = _prepare_targets(
+        chronological, rule, search_indices, search_best.feature_config
+    )
+    local_validation_targets = _prepare_targets(
+        chronological, rule, validation_indices, search_best.feature_config
+    )
     local = [
         LearnedSearchTrial(
             params,
             search_best.feature_config,
-            _objective(prepared[search_best.feature_config][0], params),
-            _objective(prepared[search_best.feature_config][1], params),
+            _objective(local_search_targets, params),
+            _objective(local_validation_targets, params),
         )
         for params in local_params
     ]
@@ -344,4 +450,5 @@ def search_learned_ranker_params(
         trials=trials,
         selection_target_indices=(*search_indices, *validation_indices),
         test_segment_used_for_selection=False,
+        search_space_manifest=build_search_space_manifest(smoke=search_config.smoke),
     )

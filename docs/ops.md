@@ -46,5 +46,14 @@
 - 使用 `make digit-learned-ranker-v4 ... DIGIT_V4_SMOKE=1` 做短流程冒烟；正式报告需去掉 smoke 并保存完整搜索空间。
 - 参数文件必须同时保留 `csvSha256`、`sourceFingerprint`、`paramsFingerprint`、`artifactFingerprint`、切分边界和 `testSegmentUsedForSelection=false`。
 - 评估 JSON 是日报闸门的唯一依据；只有 `reportFingerprint`、玩法、源码、参数产物和冻结 test 证明全部匹配时才可晋级，缺失、损坏或 `gate.passed=false` 时日报必须保持研究模式。
-- 同一源期冻结快照重复运行应字节一致；若参数、源码或 CSV 变化导致内容不同，命令会拒绝覆盖，应使用新的源期或独立输出目录。
-- v4 不联网；CSV 只能来自调用者提供的本地路径。运行前确认 Python 3.11 等效环境及磁盘空间。
+- 同一源期、实验、参数的冻结快照重复运行应字节一致；不同实验或参数使用独立路径，已有同身份产物内容不同则拒绝覆盖。
+- v4 训练、评估和日报本身不联网；CSV 由调用者提供，也可先用显式固定白名单抓取命令生成。运行前确认 Python 3.11 等效环境及磁盘空间。
+# learned_ranker_v4 运维补充
+
+- 推荐使用 `conda activate python311`；若主机无 conda，可在仓库内创建 `.venv` 并安装 `requirements.txt`、`requirements-dev.txt`。
+- 正式运行前保存参数、冻结评估和日报目录；同一期同实验同参数快照不可覆盖，冲突表示输入或代码已变化，应新建 experimentId。
+- 监控 `evaluationValidation` 的 rule/params/artifact/source/canonical/fingerprint/frozen-test 匹配项；canonical 校验只针对训练时 `split.testEnd` 冻结前缀，允许其后追加新开奖但拒绝前缀修订；任一证据失败都必须关闭 direct/group activation。
+- 开奖更新后先运行 daily：程序先复盘旧 immutable 快照，再生成当前 sourceIssue 的新快照，避免事后覆盖。
+- v4 live summary 文件名包含玩法、experimentId 和参数指纹前缀；禁止人工合并不同参数或 v1-v3 汇总。
+- `max_perm/mean_top_perm` 日志和报告只能标记 score/aggregation，不得转换为百分比概率。
+- 真实启用前必须在冻结样本中优于同成本随机基线；无真实 CSV 时只允许合成数据 smoke，并在报告中标记无效果结论。

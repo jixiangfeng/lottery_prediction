@@ -377,7 +377,7 @@ reports/learned_ranker_v4_daily/
 推荐快照：
 
 ```text
-reports/picks/digit/<彩种>_learned_ranker_v4_<源期号>.json
+reports/picks/digit/<彩种>_learned_ranker_v4_<实验ID>_<参数指纹前缀>_<源期号>.json
 ```
 
 评估报告：

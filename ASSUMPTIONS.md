@@ -16,6 +16,12 @@
 - SHA-256 指纹用于检测意外或未同步篡改，不提供密钥签名意义上的来源认证；可信发布仍需版本控制签名或外部时间戳。
 - 本次环境没有可用的 `conda` 命令，但 `uv run --python 3.11 --with-requirements requirements-dev.txt` 使用 Python 3.11.15 和锁定依赖，视为规范允许的等效虚拟环境。
 - 仓库内未发现可用 CSV；最终真实本地 CSV 冒烟仅在后续出现 `data/fc3d/official_history.csv` 或项目内 fc3d/pl3 CSV 时执行，不联网补数。
+- 下一期号不能可靠从 `sourceIssue` 算术递增推导，因此快照默认 `targetIssue=null`，后续按数值期号排序取 `sourceIssue` 后第一期。
+- `experimentId` 缺省时由玩法与固定 seed 生成；显式实验使用独立快照/日报路径，并与 `paramsFingerprint` 一起隔离实盘汇总。
+- 正式搜索空间完整记录，但单次运行不物化全部参数组合的全部目标期特征矩阵；采用确定性有界采样和按 feature config 惰性准备。
+- overall `gate.passed/gatePassed` 仅为兼容字段，语义固定为 `commonPassed && directPassed && groupPassed`；部分通过时只启用对应推荐部分。
+- 只有 `sum_prob` 可称组选 probability；`max_perm/mean_top_perm` 只解释为 score/aggregation。
+- 合成数据 CLI 冒烟只证明可运行、可复现和安全闸门有效，不用于宣称真实预测效果。
 
 ## 数据
 

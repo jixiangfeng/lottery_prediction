@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -132,6 +134,31 @@ def normalize_digit_dataframe(df: pd.DataFrame, rule: LotteryRule) -> pd.DataFra
     return sort_digit_dataframe_by_issue(
         output[["期数", *rule.number_columns]], ascending=False
     )
+
+
+def canonical_digit_data_sha256(df: pd.DataFrame, rule: LotteryRule) -> str:
+    """返回标准化、按数值期号升序后的语义数据 SHA-256。"""
+
+    normalized = normalize_digit_dataframe(df, rule)
+    chronological = sort_digit_dataframe_by_issue(normalized, ascending=True)
+    rows = [
+        [
+            str(row["期数"]),
+            *[int(row[column]) for column in rule.number_columns],
+        ]
+        for _, row in chronological.iterrows()
+    ]
+    serialized = json.dumps(
+        {
+            "ruleCode": rule.code,
+            "columns": ["期数", *rule.number_columns],
+            "rows": rows,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def load_digit_csv(

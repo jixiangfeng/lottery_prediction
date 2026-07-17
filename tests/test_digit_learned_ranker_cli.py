@@ -7,8 +7,6 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-import pytest
-
 from scripts.digit_learned_ranker import main
 from src.analysis.digit_learned_features import LearnedFeatureConfig
 from src.analysis.digit_learned_ranker import (
@@ -29,6 +27,22 @@ def _write_csv(path: Path, periods: int = 20) -> None:
             f"{2026001 + index},{index % 10}{(index * 3 + 1) % 10}{(index * 7 + 2) % 10}"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _daily_json_path(output_dir: Path, issue: str = "2026020") -> Path:
+    matches = sorted(
+        (output_dir / "learned_ranker_v4_daily").glob(f"fc3d*_daily_{issue}.json")
+    )
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _snapshot_path(output_dir: Path, issue: str = "2026020") -> Path:
+    matches = sorted(
+        (output_dir / "picks" / "digit").glob(f"fc3d_learned_ranker_v4_*_{issue}.json")
+    )
+    assert len(matches) == 1
+    return matches[0]
 
 
 def test_daily_cli_writes_reproducible_fingerprinted_artifacts(tmp_path: Path):
@@ -70,12 +84,12 @@ def test_daily_cli_writes_reproducible_fingerprinted_artifacts(tmp_path: Path):
         str(params_path),
     ]
     assert main(args) == 0
-    snapshot = output_dir / "picks" / "digit" / "fc3d_learned_ranker_v4_2026020.json"
+    snapshot = _snapshot_path(output_dir)
     first_snapshot = snapshot.read_bytes()
     assert main(args) == 0
     assert snapshot.read_bytes() == first_snapshot
 
-    daily_json = output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.json"
+    daily_json = _daily_json_path(output_dir)
     payload = json.loads(daily_json.read_text(encoding="utf-8"))
     assert payload["csvSha256"]
     assert payload["sourceFingerprint"]
@@ -127,11 +141,7 @@ def test_daily_does_not_promote_mismatched_frozen_evaluation(tmp_path: Path):
         == 0
     )
 
-    payload = json.loads(
-        (output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    payload = json.loads((_daily_json_path(output_dir)).read_text(encoding="utf-8"))
     assert payload["gatePassed"] is False
     assert payload["mode"] == "研究模式，不接入主推荐"
     assert payload["evaluationValidation"] == {
@@ -141,6 +151,7 @@ def test_daily_does_not_promote_mismatched_frozen_evaluation(tmp_path: Path):
         "paramsMatched": True,
         "paramsArtifactMatched": False,
         "sourceMatched": False,
+        "canonicalMatched": False,
         "fingerprintValid": False,
         "frozenTestMatched": False,
         "promoted": False,
@@ -178,11 +189,7 @@ def test_daily_rejects_forged_gate_without_frozen_evaluation_fingerprint(
         output_dir=output_dir,
         evaluation_path=evaluation_path,
     )
-    payload = json.loads(
-        (output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    payload = json.loads((_daily_json_path(output_dir)).read_text(encoding="utf-8"))
 
     assert payload["gatePassed"] is False
     assert payload["evaluationValidation"]["fingerprintValid"] is False
@@ -205,11 +212,7 @@ def test_daily_degrades_to_research_mode_when_evaluation_is_corrupted(tmp_path: 
         output_dir=output_dir,
         evaluation_path=evaluation_path,
     )
-    payload = json.loads(
-        (output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    payload = json.loads((_daily_json_path(output_dir)).read_text(encoding="utf-8"))
 
     assert payload["gatePassed"] is False
     assert payload["mode"] == "研究模式，不接入主推荐"
@@ -271,17 +274,15 @@ def test_evaluate_uses_frozen_training_split_and_daily_accepts_only_matching_rep
         output_dir=output_dir,
         evaluation_path=evaluation_path,
     )
-    daily = json.loads(
-        (output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    daily = json.loads((_daily_json_path(output_dir)).read_text(encoding="utf-8"))
     assert daily["evaluationValidation"]["fingerprintValid"] is True
     assert daily["evaluationValidation"]["frozenTestMatched"] is True
     assert daily["recentEvaluation"]["50"]["periods"] == 6
 
 
-def test_snapshot_conflict_does_not_partially_overwrite_daily_artifacts(tmp_path: Path):
+def test_different_params_are_isolated_without_overwriting_daily_artifacts(
+    tmp_path: Path,
+):
     csv_path = tmp_path / "fc3d.csv"
     output_dir = tmp_path / "reports"
     first_params = tmp_path / "first.json"
@@ -289,17 +290,20 @@ def test_snapshot_conflict_does_not_partially_overwrite_daily_artifacts(tmp_path
     _write_csv(csv_path)
     save_params(LearnedRankerParams(), first_params)
     save_params(replace(LearnedRankerParams(), temperature=0.5), second_params)
-    _, daily_json, _ = generate_learned_ranker_daily(
+    _, first_daily_json, first_snapshot = generate_learned_ranker_daily(
         "fc3d", csv_path, first_params, output_dir=output_dir
     )
-    original = daily_json.read_bytes()
+    original = first_daily_json.read_bytes()
 
-    with pytest.raises(FileExistsError, match="冻结快照"):
-        generate_learned_ranker_daily(
-            "fc3d", csv_path, second_params, output_dir=output_dir
-        )
+    _, second_daily_json, second_snapshot = generate_learned_ranker_daily(
+        "fc3d", csv_path, second_params, output_dir=output_dir
+    )
 
-    assert daily_json.read_bytes() == original
+    assert first_daily_json != second_daily_json
+    assert first_snapshot != second_snapshot
+    assert first_daily_json.read_bytes() == original
+    assert first_daily_json.exists() and second_daily_json.exists()
+    assert first_snapshot.exists() and second_snapshot.exists()
 
 
 def test_digit_report_learned_mode_routes_to_v4_and_rejects_pl5(tmp_path: Path):
@@ -317,7 +321,9 @@ def test_digit_report_learned_mode_routes_to_v4_and_rejects_pl5(tmp_path: Path):
         ranking_mode="learned_ranker_v4",
         learned_ranker_params_path=params_path,
     )
-    assert output == output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.md"
+    assert output.parent == output_dir / "learned_ranker_v4_daily"
+    assert output.name.startswith("fc3d_learned_ranker_v4_")
+    assert output.name.endswith("_daily_2026020.md")
     assert "研究模式，不接入主推荐" in output.read_text(encoding="utf-8")
 
     pl5_path = tmp_path / "pl5.csv"

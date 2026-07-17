@@ -6,6 +6,11 @@
 
 ### Added
 
+- 完整化 learned_ranker_v4：canonical 独立窗口权重、五类特征 × `30-300/50-all/30÷300` 三种独立趋势变换、全行为搜索空间 manifest、seeded 有界采样和惰性特征准备。
+- 新增 common/direct/group 分项闸门、部分启用 activation、日报 `mainRecommendation/research` 分区与 v4 专用不可变实盘复盘/隔离汇总。
+- 新增标准化数值期号排序的 `canonicalDataSha256`，贯穿参数、冻结评估、日报、快照和开奖后复盘校验。
+- 新增 fc3d/pl3 train→evaluate→daily CLI 集成、跨进程确定性、损坏/伪造/过期证据、实验隔离和组选语义回归测试。
+
 - 新增三位彩固定评分算法 v4：完整 `000-999` 多窗口特征、贝叶斯平滑、时间衰减、遗漏/趋势/上期关系、固定线性评分和稳定 tie-break。
 - 新增可复现随机/局部参数搜索，严格隔离 search、validation 和 frozen test，并搜索权重、温度、组选聚合、窗口、半衰期与遗漏上限。
 - 新增冻结逐期前推评估，输出 LogLoss、Brier、排名、直选/组选 TopK、逐期精确组选随机基线、单侧 p 值、分块稳定性和闸门结论。

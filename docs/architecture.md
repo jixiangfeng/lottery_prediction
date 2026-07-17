@@ -77,3 +77,22 @@ flowchart LR
 ```
 
 每个目标期都重新构建仅截止上一期的 `LearnedHistoryState`，随后生成 1000 行候选特征矩阵。参数搜索预计算 search/validation 特征，但不会构建 frozen test 特征。
+# learned_ranker_v4 完整化数据流
+
+```mermaid
+flowchart LR
+    CSV[本地 CSV] --> CANON[标准化 + 数值期号排序\ncanonicalDataSha256]
+    CANON --> SEARCH[seeded 分阶段搜索\n惰性 feature config 缓存]
+    SEARCH --> PARAMS[参数产物\n实验/参数/空间 manifest]
+    PARAMS --> FROZEN[冻结 test 评估]
+    FROZEN --> GATES[common/direct/group gates]
+    GATES --> DAILY[日报 main/research 分区]
+    DAILY --> SNAP[immutable v4 snapshot]
+    SNAP --> REVIEW[sourceIssue 后第一期开奖复盘]
+    REVIEW --> SUMMARY[按 experiment + params 隔离汇总]
+```
+
+- 特征层对每个窗口独立计算统计，再按 canonical window weight 聚合；趋势分量仍单独进入可解释贡献。
+- 搜索层不同时保留全部配置的全部目标期 DataFrame；逐配置准备、评分后释放，只保留轻量 trial 元数据。
+- 写入层先对成对 Markdown/JSON/快照做完整预检，再原子写入；immutable 冲突时任何文件都不覆盖。
+- v4 实盘复盘使用独立目录和 schema，不调用 v1-v3 累计汇总，避免跨版本样本污染。

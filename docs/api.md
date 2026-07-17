@@ -64,3 +64,13 @@
 参数 JSON 的 `paramsFingerprint` 覆盖完整模型与特征配置，`artifactFingerprint` 覆盖参数元数据和冻结切分。冻结评估 JSON 通过 `reportFingerprint` 校验全部字段，并记录 `evaluationKind=frozen_test`、`testSegmentUsedForSelection=false`、CSV/源码/参数产物指纹；daily 只有在玩法和这些冻结证据全部匹配时才读取 `gate.passed=true` 晋级。
 
 参数概率是 softmax 归一化排序值，不应解释为真实开奖概率。
+# learned_ranker_v4 补充 API
+
+- `canonical_digit_data_sha256(df, rule) -> str`：标准化数据并按数值期号升序序列化，返回不受 CSV 行顺序和文本格式影响的 SHA-256。
+- `LearnedFeatureConfig.window_weights`：与 `windows` 一一对应的 canonical 正权重；参与参数序列化和指纹。
+- `build_search_space_manifest(smoke=...)`：声明特征权重边界、窗口集合/权重 profile、alpha、half-life、omission cap、temperature、组选聚合、归一化和固定推荐成本；smoke 只改变有界采样预算，单次运行不声称穷举笛卡尔积。
+- `resolve_activation(...)`：返回 common/direct/group、activeDirect/activeGroup 和兼容 overall 语义。
+- `process_learned_ranker_live_evaluations(...)`：只读取 immutable v4 快照，按 `(ruleCode, experimentId, paramsFingerprint, targetIssue)` 去重并输出实验隔离汇总。
+- 冻结评估 `gate` 同时提供 `common`、`direct`、`group`、`activation` 和兼容 `passed`。
+- 日报 `plan` 同时提供 `mainRecommendation` 与 `research`；未通过分项不会出现在主推荐。
+- v4 快照 schema v2 必含 `modelVersion/experimentId/sourceIssue/targetIssue或nextIssueInterpretation/generatedAt/immutable/paramsFingerprint/paramsArtifactFingerprint/canonicalDataSha256/frozenDataCanonicalSha256/sourceFingerprint/activation/candidates/snapshotFingerprint`；冻结评估按 `split.testEnd` 前缀校验，允许后续追加但拒绝前缀修改。

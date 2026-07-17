@@ -80,6 +80,20 @@
 
 ## 严格 TDD 记录
 
+- v4 完整化第一组 RED：`conda run -n python311 ...` 因主机无 conda 命令退出 127；随后确认仓库内等效 Python 3.11 环境。
+- v4 完整化第一组 RED：`.venv/bin/python -m pytest -q tests/test_digit_learned_ranker_v4_completion.py` 在收集阶段因缺少 `canonical_digit_data_sha256` 失败（1 error）。
+- 第一组 GREEN：窗口权重、趋势、canonical 哈希、搜索 manifest、分项 activation、组选语义共 `6 passed`。
+- 第二组 RED：缺少 `partition_plan_by_activation`，测试收集失败；实现分项 gate 后聚焦回归发现候选乱序造成浮点差异。
+- 第二组 GREEN：canonical 候选排序修复后，completion/walk-forward/CLI 共 `22 passed`。
+- 实盘组 RED：缺少 `process_learned_ranker_live_evaluations`；实现后又由既有回归发现预检错误标签顺序。
+- 实盘组 GREEN：自描述快照、sourceIssue 后第一期、去重、immutable/canonical 校验和部分覆盖保护共 `18 passed`。
+- CLI/搜索组 RED：缺少 `sample_feature_configs`；实验隔离测试进一步命中同一期路径冲突；canonical 防伪测试命中重算报告指纹仍可晋级。
+- CLI/搜索组 GREEN：seeded 采样、惰性准备、实验/参数路径隔离、canonical 晋级证据、fc3d/pl3 三段 CLI、跨进程确定性全部通过。
+- 序列化 RED：搜索 trial 缺少 `windowWeights`；补齐后 `1 passed`。
+- 最终 v4 聚焦：`44 passed`；新增序列化用例另行 `1 passed`。
+- 独立审查 RED：`trend_ratio_30_300` 因对负 log 概率截零而恒为 0；追加新开奖后 daily 用全量 canonical 对比冻结报告，错误关闭 activation；完整搜索 manifest 缺少权重边界、alpha、组选聚合和固定推荐配置。
+- 审查修复 GREEN：ratio 改为 log 概率差，补齐五类特征 × 三种趋势变换矩阵；evaluate/daily 按 `split.testEnd` 校验冻结前缀并允许尾部追加；manifest 补齐全部行为维度；最新 v4 聚焦 `46 passed`。
+
 - 第一轮 RED：缺少 `digit_learned_features` / `digit_learned_ranker` 模块；实现后 7 项 GREEN。
 - 第二轮 RED：缺少搜索与冻结前推模块；实现后 3 项 GREEN。
 - 第三轮 RED：缺少 v4 CLI；实现后 2 项 GREEN。
@@ -89,15 +103,23 @@
 
 ## 自测
 
-- v4 聚焦回归：27 项通过。
-- 全量 `make test`：190 项通过，覆盖率 88.83%，高于 80% 门槛。
+- v4 聚焦回归：46 项通过。
+- 全量 `make test`：209 项通过，覆盖率 88.75%，高于 80% 门槛。
 - `make lint`：Black、isort、flake8、mypy（28 个源码文件）通过。
 - `make build`：`src/scripts/examples` compileall 通过。
 - 完整 `make ci`：lint、test、build 全部通过。
 
 ## 冒烟与边界
 
-- 已扫描仓库全部 `*.csv`，包括优先路径 `data/fc3d/official_history.csv`、`data/fc3d/data.csv`、`data/pl3/official_history.csv`、`data/pl3/data.csv`，当前均不存在，因此未执行真实开奖数据验证，也未联网下载数据。
+- 本地现已通过固定白名单抓取并由既有加载器复核 fc3d/pl3 各 1000 期官方历史：fc3d `2023243-2026188`，pl3 `23243-26188`，均无重复期号。
 - 使用临时生成的 60 期三位数 CSV 实际串行执行 `train --smoke`、`evaluate`、`daily`，三条 CLI 均返回 0；生成参数、冻结评估、Markdown/JSON 日报及不可覆盖快照。
 - 冒烟评估覆盖 15 期；日报确认玩法、完整模型、参数产物、源码、报告指纹及 frozen-test 证据全部匹配。统计闸门未通过，正确保持“研究模式，不接入主推荐”。
 - 上述合成数据只证明工程链路可运行，不是预测有效性证据；彩票结果具有高度随机性，本实现不宣称预测有效，不保证中奖或盈利。
+- 真实数据 smoke 训练已完成；独立审查修复后，使用最终源码重新运行两种彩票的 `train --smoke → evaluate → daily`，冻结测试各覆盖 250 期且全部证据指纹匹配。
+
+## v4 最终源码真实数据冻结评估（smoke 选参）
+
+- 福彩3D：250 期，直选 `5/250`（`p=0.107812`），组选 `14/250`（`p=0.460900`），平均排名 `492.82`；LogLoss `11.038239` 劣于均匀 `6.907755`，全部 activation 关闭。
+- 排列三：250 期，直选 `3/250`（`p=0.456831`），组选 `17/250`（`p=0.195199`），平均排名 `487.324`；LogLoss `7.726954` 劣于均匀 `6.907755`，全部 activation 关闭。
+- 两种彩票 daily 的 rule/params/artifact/source/canonical/report/frozen-test 证据全部匹配，但统计闸门未通过，均正确保持“研究模式，不接入主推荐”。
+- 这里使用 smoke 预算选择参数，但 frozen test 仍逐期完整覆盖最后 250 期；它证明当前参数没有优势，不替代默认正式搜索预算的最终研究结论，更不能作为投注依据。

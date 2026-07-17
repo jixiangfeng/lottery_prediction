@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -32,6 +32,29 @@ FEATURE_NAMES = (
     "span_distribution",
     "parity_bigsmall",
     "recent_trend",
+    "position_trend",
+    "pair_trend",
+    "sum_trend",
+    "span_trend",
+    "shape_trend",
+    "trend_30_300",
+    "trend_50_all",
+    "trend_ratio_30_300",
+    "position_trend_30_300",
+    "pair_trend_30_300",
+    "sum_trend_30_300",
+    "span_trend_30_300",
+    "shape_trend_30_300",
+    "position_trend_50_all",
+    "pair_trend_50_all",
+    "sum_trend_50_all",
+    "span_trend_50_all",
+    "shape_trend_50_all",
+    "position_trend_ratio_30_300",
+    "pair_trend_ratio_30_300",
+    "sum_trend_ratio_30_300",
+    "span_trend_ratio_30_300",
+    "shape_trend_ratio_30_300",
     "latest_distance",
     "repeat_latest",
     "omission_rebound",
@@ -47,6 +70,7 @@ class LearnedFeatureConfig:
     alpha: float = 2.0
     half_life: float | None = None
     omission_cap: int = 50
+    window_weights: tuple[tuple[str, float], ...] | Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
         if not self.windows:
@@ -59,6 +83,21 @@ class LearnedFeatureConfig:
             raise ValueError("半衰期必须大于零或为空")
         if self.omission_cap <= 0:
             raise ValueError("遗漏上限必须大于零")
+        labels = tuple(str(value) for value in self.windows)
+        if len(set(labels)) != len(labels):
+            raise ValueError("历史窗口不得重复")
+        supplied = dict(self.window_weights or ((label, 1.0) for label in labels))
+        if set(supplied) != set(labels):
+            raise ValueError("窗口权重必须与 windows 一一对应")
+        canonical = tuple((label, float(supplied[label])) for label in labels)
+        if any(not math.isfinite(value) or value <= 0 for _, value in canonical):
+            raise ValueError("窗口权重必须为有限正数")
+        object.__setattr__(self, "window_weights", canonical)
+
+    def window_weight_map(self) -> dict[str, float]:
+        """返回按 canonical 窗口顺序构造的独立权重。"""
+
+        return dict(self.window_weights or ())
 
 
 @dataclass(frozen=True)
@@ -326,6 +365,31 @@ def _robust_z(values: np.ndarray) -> np.ndarray:
     return np.clip((values - median) / scale, -8.0, 8.0)
 
 
+def _weighted_window_mean(
+    per_window: Mapping[Window, Mapping[str, float]],
+    key: str,
+    config: LearnedFeatureConfig,
+) -> float:
+    weights = config.window_weight_map()
+    numerator = math.fsum(
+        float(values[key]) * weights[str(window)]
+        for window, values in per_window.items()
+    )
+    denominator = math.fsum(weights[str(window)] for window in per_window)
+    return numerator / denominator
+
+
+def _trend_value(
+    per_window: Mapping[Window, Mapping[str, float]],
+    key: str,
+    left: Window,
+    right: Window,
+) -> float:
+    if left not in per_window or right not in per_window:
+        return 0.0
+    return float(per_window[left][key] - per_window[right][key])
+
+
 def build_candidate_features(
     state: LearnedHistoryState,
     rule: LotteryRule,
@@ -387,6 +451,25 @@ def build_candidate_features(
         ordered_windows = list(state.config.windows)
         short = per_window[ordered_windows[0]]
         long = per_window[ordered_windows[-1]]
+        component_keys = ("position", "pair", "sum", "span", "shape")
+        component_trends = {
+            key: float(short[key] - long[key]) for key in component_keys
+        }
+        trend_30_300_by_key = {
+            key: _trend_value(per_window, key, 30, 300) for key in component_keys
+        }
+        trend_50_all_by_key = {
+            key: _trend_value(per_window, key, 50, "all") for key in component_keys
+        }
+        ratio_by_key: dict[str, float] = {}
+        for key in component_keys:
+            if 30 in per_window and 300 in per_window:
+                # 窗口特征本身是 log 概率；两者相减即 log(rate30/rate300)。
+                ratio_by_key[key] = float(per_window[30][key]) - float(
+                    per_window[300][key]
+                )
+            else:
+                ratio_by_key[key] = 0.0
         latest = state.latest_numbers
         latest_distance = (
             0.0
@@ -413,7 +496,7 @@ def build_candidate_features(
             "digit_2": candidate[2],
             **pattern,
             "position_frequency": float(
-                np.mean([value["position"] for value in per_window.values()])
+                _weighted_window_mean(per_window, "position", state.config)
             ),
             "position_omission": float(
                 np.mean(
@@ -421,21 +504,41 @@ def build_candidate_features(
                 )
             ),
             "pair_frequency": float(
-                np.mean([value["pair"] for value in per_window.values()])
+                _weighted_window_mean(per_window, "pair", state.config)
             ),
             "shape_distribution": float(
-                np.mean([value["shape"] for value in per_window.values()])
+                _weighted_window_mean(per_window, "shape", state.config)
             ),
             "sum_distribution": float(
-                np.mean([value["sum"] for value in per_window.values()])
+                _weighted_window_mean(per_window, "sum", state.config)
             ),
             "span_distribution": float(
-                np.mean([value["span"] for value in per_window.values()])
+                _weighted_window_mean(per_window, "span", state.config)
             ),
             "parity_bigsmall": float(
-                np.mean([value["parity_bigsmall"] for value in per_window.values()])
+                _weighted_window_mean(per_window, "parity_bigsmall", state.config)
             ),
             "recent_trend": float(np.mean([short[key] - long[key] for key in short])),
+            "position_trend": component_trends["position"],
+            "pair_trend": component_trends["pair"],
+            "sum_trend": component_trends["sum"],
+            "span_trend": component_trends["span"],
+            "shape_trend": component_trends["shape"],
+            "trend_30_300": float(np.mean(list(trend_30_300_by_key.values()))),
+            "trend_50_all": float(np.mean(list(trend_50_all_by_key.values()))),
+            "trend_ratio_30_300": float(np.mean(list(ratio_by_key.values()))),
+            **{
+                f"{key}_trend_30_300": value
+                for key, value in trend_30_300_by_key.items()
+            },
+            **{
+                f"{key}_trend_50_all": value
+                for key, value in trend_50_all_by_key.items()
+            },
+            **{
+                f"{key}_trend_ratio_30_300": value
+                for key, value in ratio_by_key.items()
+            },
             "latest_distance": -latest_distance,
             "repeat_latest": float(np.mean([repeated_digits, same_position])),
             "omission_rebound": float(
