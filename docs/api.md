@@ -49,3 +49,18 @@
 严格前推报告 schema v5 在 `strategyViability` 下按策略输出 `directGate`、`groupGate`、`viable` 和 `reason`。每个目标期同时保存 `directRandomProbability` 与 `groupRandomProbability`，便于复核零假设。
 
 所有分数与报告仅用于历史研究，不保证中奖。
+
+## learned_ranker_v4
+
+- `build_history_state(history, rule, config, target_issue=...)`：按数值期号排除目标期及未来数据。
+- `build_candidate_features(state, rule, candidates=None)`：生成完整 `000-999` 多窗口特征矩阵。
+- `score_candidates(features, params)`：执行固定线性评分。
+- `build_learned_ranker_plan(features, params, rule)`：输出直选、组选、位置复式池和组选数字池。
+- `search_learned_ranker_params(history, rule, config)`：仅使用 search/validation 选参，返回搜索轨迹和最终特征配置。
+- `run_learned_ranker_walk_forward(history, rule, params, split)`：冻结参数评估 test 段，不执行调参。
+- `generate_learned_ranker_daily(...)`：写出 Markdown、JSON 和不可覆盖冻结快照。
+- CLI：`scripts/digit_learned_ranker.py train|evaluate|daily`。
+
+参数 JSON 的 `paramsFingerprint` 覆盖完整模型与特征配置，`artifactFingerprint` 覆盖参数元数据和冻结切分。冻结评估 JSON 通过 `reportFingerprint` 校验全部字段，并记录 `evaluationKind=frozen_test`、`testSegmentUsedForSelection=false`、CSV/源码/参数产物指纹；daily 只有在玩法和这些冻结证据全部匹配时才读取 `gate.passed=true` 晋级。
+
+参数概率是 softmax 归一化排序值，不应解释为真实开奖概率。

@@ -15,6 +15,7 @@
 - 可行性闸门：直选、组选分别检验，只有长期、显著、稳定地高于精确随机基线才标记为可行。
 - 概率 v2：完整1000状态归一化、严格历史校准、独立守门和失败时均匀回退。
 - 在线概率 v3：每期先预测再按开奖结果更新14个统计模型权重，完整记录权重轨迹；可作为独立日报模式运行。
+- 固定评分 v4：完整 `000-999` 多窗口特征、贝叶斯平滑、可选半衰期衰减、固定线性权重、严格 search/validation/frozen-test 隔离和研究日报。
 
 ## 快速开始
 
@@ -65,6 +66,31 @@
 普通日报允许同一期重新生成；正式开奖前实验必须显式冻结，已冻结的同源期快照不能被后续普通运行覆盖：
 
     make digit-report DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/data.csv DIGIT_FREEZE_PICK=1
+
+## 固定评分算法 v4
+
+v4 首版只支持 `fc3d` 和 `pl3`；`pl5` 会明确拒绝并保持旧路径。完整设计见 `docs/learned_ranker_v4_design.md`。正式流程：
+
+    make digit-learned-ranker-train DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
+    make digit-learned-ranker-evaluate DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
+    make digit-learned-ranker-daily DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
+
+完整参数搜索较慢时可先做流水线冒烟；它只减少 trial 和目标期，不会把核心算法替换为占位实现：
+
+    make digit-learned-ranker-v4 DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv DIGIT_V4_SMOKE=1
+
+也可通过原日报入口生成 v4 研究日报：
+
+    make digit-report DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv DIGIT_RANKING_MODE=learned_ranker_v4
+
+主要产物：
+
+- `reports/state/learned_ranker_v4/<彩种>_params.json`：参数、搜索证据、CSV/源码/参数指纹。
+- `reports/evaluations/learned_ranker_v4_<彩种>.md/.json`：冻结测试 LogLoss、Brier、排名、TopK、精确组选随机基线、p 值和分块闸门。
+- `reports/learned_ranker_v4_daily/<彩种>_daily_<期号>.md/.json`：直选/组选、位置池、组选数字池和研究状态。
+- `reports/picks/digit/<彩种>_learned_ranker_v4_<源期号>.json`：内容不同即拒绝覆盖的冻结快照。
+
+只有冻结测试 JSON 的全部预设闸门通过时，日报才会显示通过；否则必须写明“研究模式，不接入主推荐”。归一化概率只是评分转化，不是实际开奖概率，不保证中奖或盈利。
 
 ## 严格前推
 

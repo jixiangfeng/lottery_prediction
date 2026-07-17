@@ -1,6 +1,6 @@
 # 福彩3D、排列三、排列五分析工具 Makefile
 
-.PHONY: setup fmt lint test build run digit-fetch digit-report digit-walk-forward digit-probability-walk-forward digit-probability-online ci clean help
+.PHONY: setup fmt lint test build run digit-fetch digit-report digit-walk-forward digit-probability-walk-forward digit-probability-online digit-learned-ranker-train digit-learned-ranker-evaluate digit-learned-ranker-daily digit-learned-ranker-v4 ci clean help
 .DEFAULT_GOAL := help
 
 -include .env
@@ -47,6 +47,13 @@ DIGIT_ONLINE_LEARNING_RATE ?= 1.0
 DIGIT_ONLINE_FIXED_SHARE ?= 0.01
 DIGIT_ONLINE_STATE_PATH ?=
 DIGIT_REBUILD_ONLINE_STATE ?= 0
+DIGIT_V4_PARAMS ?= reports/state/learned_ranker_v4/$(DIGIT_LOTTERY)_params.json
+DIGIT_V4_EVALUATION ?= reports/evaluations/learned_ranker_v4_$(DIGIT_LOTTERY).json
+DIGIT_V4_MIN_TRAIN_SIZE ?= 100
+DIGIT_V4_RANDOM_TRIALS ?= 24
+DIGIT_V4_LOCAL_TRIALS ?= 12
+DIGIT_V4_EVALUATION_STRIDE ?= 1
+DIGIT_V4_SMOKE ?= 0
 
 setup: ## 安装依赖并准备运行目录
 	@echo "请确认已激活 python311 Conda 环境"
@@ -77,7 +84,7 @@ digit-fetch: ## 从官方公开接口显式抓取福彩3D或排列三历史
 	$(RUN) scripts/fetch_digit_history.py --lottery $(DIGIT_LOTTERY) --periods $(DIGIT_FETCH_PERIODS) --output $(DIGIT_CSV)
 
 digit-report: ## 从本地 CSV 生成数字彩日报
-	$(RUN) scripts/digit_report.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(OUTPUT_DIR) --candidate-count $(DIGIT_CANDIDATE_COUNT) --ranking-mode $(DIGIT_RANKING_MODE) --monte-carlo-simulations $(DIGIT_MC_SIMULATIONS) --ml-training-periods $(DIGIT_ML_TRAINING_PERIODS) --ml-negative-samples $(DIGIT_ML_NEGATIVE_SAMPLES) --constraint-mode $(DIGIT_CONSTRAINT_MODE) --constraint-probability-floor $(DIGIT_CONSTRAINT_PROBABILITY_FLOOR) --constraint-penalty-weight $(DIGIT_CONSTRAINT_PENALTY_WEIGHT) --probability-validation-periods $(DIGIT_PROBABILITY_VALIDATION_PERIODS) --probability-min-train-size $(DIGIT_PROBABILITY_MIN_TRAIN_SIZE) --probability-minimum-validation-periods $(DIGIT_PROBABILITY_MIN_VALIDATION_PERIODS) --online-probability-min-train-size $(DIGIT_ONLINE_MIN_TRAIN_SIZE) --online-probability-temperature $(DIGIT_ONLINE_TEMPERATURE) --online-probability-uniform-prior-weight $(DIGIT_ONLINE_UNIFORM_PRIOR_WEIGHT) --online-probability-learning-rate $(DIGIT_ONLINE_LEARNING_RATE) --online-probability-fixed-share $(DIGIT_ONLINE_FIXED_SHARE) $(if $(DIGIT_ONLINE_STATE_PATH),--online-probability-state-path $(DIGIT_ONLINE_STATE_PATH),) $(if $(filter 1 true yes,$(DIGIT_JSON)),--json,) $(if $(filter 1 true yes,$(DIGIT_ENABLE_MONTE_CARLO)),,--no-monte-carlo) $(if $(filter 1 true yes,$(DIGIT_ENABLE_ML)),,--no-ml) $(if $(filter 1 true yes,$(DIGIT_FREEZE_PICK)),--freeze-pick,) $(if $(filter 1 true yes,$(DIGIT_REBUILD_ONLINE_STATE)),--rebuild-online-probability-state,)
+	$(RUN) scripts/digit_report.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(OUTPUT_DIR) --candidate-count $(DIGIT_CANDIDATE_COUNT) --ranking-mode $(DIGIT_RANKING_MODE) --monte-carlo-simulations $(DIGIT_MC_SIMULATIONS) --ml-training-periods $(DIGIT_ML_TRAINING_PERIODS) --ml-negative-samples $(DIGIT_ML_NEGATIVE_SAMPLES) --constraint-mode $(DIGIT_CONSTRAINT_MODE) --constraint-probability-floor $(DIGIT_CONSTRAINT_PROBABILITY_FLOOR) --constraint-penalty-weight $(DIGIT_CONSTRAINT_PENALTY_WEIGHT) --probability-validation-periods $(DIGIT_PROBABILITY_VALIDATION_PERIODS) --probability-min-train-size $(DIGIT_PROBABILITY_MIN_TRAIN_SIZE) --probability-minimum-validation-periods $(DIGIT_PROBABILITY_MIN_VALIDATION_PERIODS) --online-probability-min-train-size $(DIGIT_ONLINE_MIN_TRAIN_SIZE) --online-probability-temperature $(DIGIT_ONLINE_TEMPERATURE) --online-probability-uniform-prior-weight $(DIGIT_ONLINE_UNIFORM_PRIOR_WEIGHT) --online-probability-learning-rate $(DIGIT_ONLINE_LEARNING_RATE) --online-probability-fixed-share $(DIGIT_ONLINE_FIXED_SHARE) $(if $(DIGIT_ONLINE_STATE_PATH),--online-probability-state-path $(DIGIT_ONLINE_STATE_PATH),) $(if $(filter learned_ranker_v4,$(DIGIT_RANKING_MODE)),--learned-ranker-params-path $(DIGIT_V4_PARAMS) --learned-ranker-evaluation-path $(DIGIT_V4_EVALUATION),) $(if $(filter 1 true yes,$(DIGIT_JSON)),--json,) $(if $(filter 1 true yes,$(DIGIT_ENABLE_MONTE_CARLO)),,--no-monte-carlo) $(if $(filter 1 true yes,$(DIGIT_ENABLE_ML)),,--no-ml) $(if $(filter 1 true yes,$(DIGIT_FREEZE_PICK)),--freeze-pick,) $(if $(filter 1 true yes,$(DIGIT_REBUILD_ONLINE_STATE)),--rebuild-online-probability-state,)
 
 digit-walk-forward: ## 严格逐期前推并与随机基线比较
 	$(RUN) scripts/digit_walk_forward.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(DIGIT_WF_OUTPUT_DIR) --periods $(DIGIT_WF_PERIODS) --min-train-size $(DIGIT_WF_MIN_TRAIN_SIZE) --candidate-count $(DIGIT_CANDIDATE_COUNT) --baseline-runs $(DIGIT_WF_BASELINE_RUNS) --inner-validation-periods $(DIGIT_WF_INNER_VALIDATION_PERIODS) --report-prefix $(DIGIT_WF_REPORT_PREFIX) --monte-carlo-simulations $(DIGIT_WF_MC_SIMULATIONS) --ml-training-periods $(DIGIT_WF_ML_TRAINING_PERIODS) --ml-negative-samples $(DIGIT_WF_ML_NEGATIVE_SAMPLES) --constraint-mode $(DIGIT_CONSTRAINT_MODE) --constraint-probability-floor $(DIGIT_CONSTRAINT_PROBABILITY_FLOOR) --constraint-penalty-weight $(DIGIT_CONSTRAINT_PENALTY_WEIGHT) $(if $(filter 1 true yes,$(DIGIT_WF_NESTED_TUNING)),--nested-tuning,) $(if $(filter 1 true yes,$(DIGIT_WF_ADVANCED_MODELS)),--advanced-models,) $(if $(filter 1 true yes,$(DIGIT_WF_COMPARE_WINDOWS)),--compare-windows,)
@@ -87,6 +94,17 @@ digit-probability-walk-forward: ## 概率 v2 固定校准后的严格前推开�
 
 digit-probability-online: ## 概率 v3 逐期预测后反馈的500期开发评估
 	$(RUN) scripts/digit_probability_online.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(DIGIT_WF_OUTPUT_DIR) --periods $(DIGIT_ONLINE_PERIODS) --min-train-size $(DIGIT_ONLINE_MIN_TRAIN_SIZE) --candidate-count $(DIGIT_CANDIDATE_COUNT) --temperature $(DIGIT_ONLINE_TEMPERATURE) --uniform-prior-weight $(DIGIT_ONLINE_UNIFORM_PRIOR_WEIGHT) --learning-rate $(DIGIT_ONLINE_LEARNING_RATE) --fixed-share $(DIGIT_ONLINE_FIXED_SHARE)
+
+digit-learned-ranker-train: ## v4 search/validation 参数搜索并保存冻结参数
+	$(RUN) scripts/digit_learned_ranker.py train --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(OUTPUT_DIR) --params $(DIGIT_V4_PARAMS) --min-train-size $(DIGIT_V4_MIN_TRAIN_SIZE) --random-trials $(DIGIT_V4_RANDOM_TRIALS) --local-trials $(DIGIT_V4_LOCAL_TRIALS) --evaluation-stride $(DIGIT_V4_EVALUATION_STRIDE) $(if $(filter 1 true yes,$(DIGIT_V4_SMOKE)),--smoke,)
+
+digit-learned-ranker-evaluate: ## v4 使用冻结参数评估 test 段
+	$(RUN) scripts/digit_learned_ranker.py evaluate --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(OUTPUT_DIR) --params $(DIGIT_V4_PARAMS)
+
+digit-learned-ranker-daily: ## v4 生成日报、JSON和不可覆盖快照
+	$(RUN) scripts/digit_learned_ranker.py daily --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(OUTPUT_DIR) --params $(DIGIT_V4_PARAMS) --evaluation $(DIGIT_V4_EVALUATION)
+
+digit-learned-ranker-v4: digit-learned-ranker-train digit-learned-ranker-evaluate digit-learned-ranker-daily ## v4 一键训练、冻结评估和日报
 
 ci: lint test build ## 本地质量闸门
 	@echo "本地 CI 全部通过"
@@ -102,4 +120,5 @@ help: ## 查看可用命令
 	@echo "make digit-walk-forward   执行严格前推回测"
 	@echo "make digit-probability-walk-forward 执行概率 v2 开发评估"
 	@echo "make digit-probability-online 执行概率 v3 在线反馈评估"
+	@echo "make digit-learned-ranker-v4 执行固定评分 v4 全流程"
 	@echo "make ci                   运行完整质量闸门"

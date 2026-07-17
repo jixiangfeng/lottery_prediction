@@ -56,3 +56,24 @@ flowchart LR
 - 三位彩默认完整空间评分；统计闸门失败时报告必须显示不可行。
 - 在线评估允许开奖后更新状态，但更新规则必须预先固定，且本期预测必须在读取本期开奖结果前完成。
 - 在线日报状态只消费已开奖期；推荐快照的稳定指纹不包含 `cache_hit`/`incremental` 等运行元数据，重复运行不得改变推荐。
+# learned_ranker_v4 数据流
+
+```mermaid
+flowchart LR
+    CSV[本地 CSV] --> N[统一标准化]
+    N --> S[search 50%]
+    N --> V[validation 25%]
+    N --> T[frozen test 25%]
+    S --> PS[随机与局部参数搜索]
+    V --> PS
+    PS --> P[冻结参数 JSON]
+    P --> WF[逐期前推]
+    T --> WF
+    WF --> G{闸门}
+    G -->|通过| D[可标记通过的研究日报]
+    G -->|失败| R[研究模式 不接入主推荐]
+    P --> D
+    P --> R
+```
+
+每个目标期都重新构建仅截止上一期的 `LearnedHistoryState`，随后生成 1000 行候选特征矩阵。参数搜索预计算 search/validation 特征，但不会构建 frozen test 特征。

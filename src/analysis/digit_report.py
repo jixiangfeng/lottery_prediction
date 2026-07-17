@@ -35,6 +35,7 @@ from src.analysis.digit_candidates import (
     with_all_history_window,
 )
 from src.analysis.digit_data import load_digit_csv
+from src.analysis.digit_learned_ranker import generate_learned_ranker_daily
 from src.analysis.digit_pick_tracking import (
     derive_live_ensemble_weights,
     process_digit_pick_evaluations,
@@ -544,8 +545,27 @@ def generate_digit_report_from_csv(
     online_probability_fixed_share: float = 0.01,
     online_probability_state_path: str | Path | None = None,
     rebuild_online_probability_state: bool = False,
+    learned_ranker_params_path: str | Path | None = None,
+    learned_ranker_evaluation_path: str | Path | None = None,
 ) -> Path:
     """从数字彩 CSV 生成 Markdown 分析报告。"""
+
+    if ranking_mode == "learned_ranker_v4":
+        if learned_ranker_params_path is None:
+            learned_ranker_params_path = (
+                Path(output_dir)
+                / "state"
+                / "learned_ranker_v4"
+                / f"{lottery}_params.json"
+            )
+        markdown_path, _, _ = generate_learned_ranker_daily(
+            lottery,
+            csv_path,
+            learned_ranker_params_path,
+            output_dir=output_dir,
+            evaluation_path=learned_ranker_evaluation_path,
+        )
+        return markdown_path
 
     rule = get_lottery_rule(lottery)
     df = load_digit_csv(csv_path, rule)
@@ -786,7 +806,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--ranking-mode",
         default="ensemble",
-        choices=("ensemble", "composite", "probability", "online_probability"),
+        choices=(
+            "ensemble",
+            "composite",
+            "probability",
+            "online_probability",
+            "learned_ranker_v4",
+        ),
         help="候选排序模式；online_probability 为逐期开奖反馈概率 v3",
     )
     parser.add_argument(
@@ -888,6 +914,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="忽略已有在线概率状态并按全部历史重放",
     )
+    parser.add_argument("--learned-ranker-params-path", help="v4 冻结参数 JSON 路径")
+    parser.add_argument(
+        "--learned-ranker-evaluation-path", help="v4 冻结评估 JSON 路径"
+    )
     args = parser.parse_args(argv)
 
     output = generate_digit_report_from_csv(
@@ -921,6 +951,8 @@ def main(argv: list[str] | None = None) -> int:
         online_probability_fixed_share=args.online_probability_fixed_share,
         online_probability_state_path=args.online_probability_state_path,
         rebuild_online_probability_state=args.rebuild_online_probability_state,
+        learned_ranker_params_path=args.learned_ranker_params_path,
+        learned_ranker_evaluation_path=args.learned_ranker_evaluation_path,
     )
     print(output)
     return 0

@@ -40,3 +40,11 @@
 4. 结果与随机相近：如实保留结果，不以候选分替代命中证据。
 5. 并发写入异常：检查目标目录权限和文件系统是否支持 flock、fsync、os.replace。
 6. 官方抓取失败：确认域名可访问后重试；字段校验失败时保留旧 CSV，不要绕过校验。
+
+## learned_ranker_v4 运维
+
+- 使用 `make digit-learned-ranker-v4 ... DIGIT_V4_SMOKE=1` 做短流程冒烟；正式报告需去掉 smoke 并保存完整搜索空间。
+- 参数文件必须同时保留 `csvSha256`、`sourceFingerprint`、`paramsFingerprint`、`artifactFingerprint`、切分边界和 `testSegmentUsedForSelection=false`。
+- 评估 JSON 是日报闸门的唯一依据；只有 `reportFingerprint`、玩法、源码、参数产物和冻结 test 证明全部匹配时才可晋级，缺失、损坏或 `gate.passed=false` 时日报必须保持研究模式。
+- 同一源期冻结快照重复运行应字节一致；若参数、源码或 CSV 变化导致内容不同，命令会拒绝覆盖，应使用新的源期或独立输出目录。
+- v4 不联网；CSV 只能来自调用者提供的本地路径。运行前确认 Python 3.11 等效环境及磁盘空间。

@@ -1,0 +1,336 @@
+# -*- coding: utf-8 -*-
+"""learned_ranker_v4 CLI 与日报集成测试。"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from scripts.digit_learned_ranker import main
+from src.analysis.digit_learned_features import LearnedFeatureConfig
+from src.analysis.digit_learned_ranker import (
+    LearnedRankerParams,
+    file_sha256,
+    generate_learned_ranker_daily,
+    learned_ranker_source_fingerprint,
+    save_params,
+)
+from src.analysis.digit_learned_ranker_search import LearnedSplit
+from src.analysis.digit_report import generate_digit_report_from_csv
+
+
+def _write_csv(path: Path, periods: int = 20) -> None:
+    lines = ["期号,开奖号码"]
+    for index in range(periods):
+        lines.append(
+            f"{2026001 + index},{index % 10}{(index * 3 + 1) % 10}{(index * 7 + 2) % 10}"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_daily_cli_writes_reproducible_fingerprinted_artifacts(tmp_path: Path):
+    csv_path = tmp_path / "fc3d.csv"
+    output_dir = tmp_path / "reports"
+    params_path = output_dir / "state" / "learned_ranker_v4" / "fc3d_params.json"
+    _write_csv(csv_path)
+    params = LearnedRankerParams()
+    save_params(params, params_path)
+    saved_fingerprint = json.loads(params_path.read_text(encoding="utf-8"))[
+        "paramsFingerprint"
+    ]
+    evaluation_path = output_dir / "evaluations" / "learned_ranker_v4_fc3d.json"
+    evaluation_path.parent.mkdir(parents=True, exist_ok=True)
+    evaluation_path.write_text(
+        json.dumps(
+            {
+                "ruleCode": "fc3d",
+                "paramsFingerprint": saved_fingerprint,
+                "gate": {"passed": False},
+                "periods": [
+                    {"direct_hit": True, "group_hit": False, "actual_rank": 8},
+                    {"direct_hit": False, "group_hit": True, "actual_rank": 200},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = [
+        "daily",
+        "--lottery",
+        "fc3d",
+        "--csv",
+        str(csv_path),
+        "--output-dir",
+        str(output_dir),
+        "--params",
+        str(params_path),
+    ]
+    assert main(args) == 0
+    snapshot = output_dir / "picks" / "digit" / "fc3d_learned_ranker_v4_2026020.json"
+    first_snapshot = snapshot.read_bytes()
+    assert main(args) == 0
+    assert snapshot.read_bytes() == first_snapshot
+
+    daily_json = output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.json"
+    payload = json.loads(daily_json.read_text(encoding="utf-8"))
+    assert payload["csvSha256"]
+    assert payload["sourceFingerprint"]
+    assert payload["paramsFingerprint"]
+    assert payload["mode"] == "研究模式，不接入主推荐"
+    assert len(payload["plan"]["directCandidates"]) == 10
+    assert payload["recentEvaluation"] == {}
+
+
+def test_daily_does_not_promote_mismatched_frozen_evaluation(tmp_path: Path):
+    csv_path = tmp_path / "fc3d.csv"
+    output_dir = tmp_path / "reports"
+    params = LearnedRankerParams()
+    params_path = tmp_path / "params.json"
+    _write_csv(csv_path)
+    save_params(params, params_path)
+    saved_fingerprint = json.loads(params_path.read_text(encoding="utf-8"))[
+        "paramsFingerprint"
+    ]
+    evaluation_path = tmp_path / "mismatched_evaluation.json"
+    evaluation_path.write_text(
+        json.dumps(
+            {
+                "ruleCode": "pl3",
+                "paramsFingerprint": saved_fingerprint,
+                "gate": {"passed": True},
+                "periods": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "daily",
+                "--lottery",
+                "fc3d",
+                "--csv",
+                str(csv_path),
+                "--output-dir",
+                str(output_dir),
+                "--params",
+                str(params_path),
+                "--evaluation",
+                str(evaluation_path),
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(
+        (output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["gatePassed"] is False
+    assert payload["mode"] == "研究模式，不接入主推荐"
+    assert payload["evaluationValidation"] == {
+        "exists": True,
+        "readable": True,
+        "ruleMatched": False,
+        "paramsMatched": True,
+        "paramsArtifactMatched": False,
+        "sourceMatched": False,
+        "fingerprintValid": False,
+        "frozenTestMatched": False,
+        "promoted": False,
+    }
+
+
+def test_daily_rejects_forged_gate_without_frozen_evaluation_fingerprint(
+    tmp_path: Path,
+):
+    csv_path = tmp_path / "fc3d.csv"
+    params_path = tmp_path / "params.json"
+    output_dir = tmp_path / "reports"
+    evaluation_path = tmp_path / "forged.json"
+    _write_csv(csv_path)
+    save_params(LearnedRankerParams(), params_path)
+    model_fingerprint = json.loads(params_path.read_text(encoding="utf-8"))[
+        "paramsFingerprint"
+    ]
+    evaluation_path.write_text(
+        json.dumps(
+            {
+                "ruleCode": "fc3d",
+                "paramsFingerprint": model_fingerprint,
+                "gate": {"passed": True},
+                "periods": [{"actual_rank": 1, "direct_hit": True, "group_hit": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    generate_learned_ranker_daily(
+        "fc3d",
+        csv_path,
+        params_path,
+        output_dir=output_dir,
+        evaluation_path=evaluation_path,
+    )
+    payload = json.loads(
+        (output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert payload["gatePassed"] is False
+    assert payload["evaluationValidation"]["fingerprintValid"] is False
+    assert payload["recentEvaluation"] == {}
+
+
+def test_daily_degrades_to_research_mode_when_evaluation_is_corrupted(tmp_path: Path):
+    csv_path = tmp_path / "fc3d.csv"
+    params_path = tmp_path / "params.json"
+    output_dir = tmp_path / "reports"
+    evaluation_path = tmp_path / "broken.json"
+    _write_csv(csv_path)
+    save_params(LearnedRankerParams(), params_path)
+    evaluation_path.write_text("{broken", encoding="utf-8")
+
+    generate_learned_ranker_daily(
+        "fc3d",
+        csv_path,
+        params_path,
+        output_dir=output_dir,
+        evaluation_path=evaluation_path,
+    )
+    payload = json.loads(
+        (output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert payload["gatePassed"] is False
+    assert payload["mode"] == "研究模式，不接入主推荐"
+    assert payload["evaluationValidation"]["readable"] is False
+
+
+def test_evaluate_uses_frozen_training_split_and_daily_accepts_only_matching_report(
+    tmp_path: Path,
+):
+    csv_path = tmp_path / "fc3d.csv"
+    output_dir = tmp_path / "reports"
+    params_path = tmp_path / "params.json"
+    _write_csv(csv_path)
+    split = LearnedSplit(search_end=10, validation_end=14, test_end=20)
+    feature_config = LearnedFeatureConfig(windows=(5, "all"))
+    save_params(
+        LearnedRankerParams(),
+        params_path,
+        metadata={
+            "csvSha256": file_sha256(csv_path),
+            "sourceFingerprint": learned_ranker_source_fingerprint(),
+            "featureConfig": {
+                "windows": list(feature_config.windows),
+                "alpha": feature_config.alpha,
+                "halfLife": feature_config.half_life,
+                "omissionCap": feature_config.omission_cap,
+            },
+            "split": split.to_dict(),
+            "testSegmentUsedForSelection": False,
+        },
+    )
+
+    assert (
+        main(
+            [
+                "evaluate",
+                "--lottery",
+                "fc3d",
+                "--csv",
+                str(csv_path),
+                "--output-dir",
+                str(output_dir),
+                "--params",
+                str(params_path),
+            ]
+        )
+        == 0
+    )
+    evaluation_path = output_dir / "evaluations" / "learned_ranker_v4_fc3d.json"
+    evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    assert evaluation["testTargetIndices"] == list(range(14, 20))
+    assert evaluation["testSegmentUsedForSelection"] is False
+    assert evaluation["reportFingerprint"]
+
+    generate_learned_ranker_daily(
+        "fc3d",
+        csv_path,
+        params_path,
+        output_dir=output_dir,
+        evaluation_path=evaluation_path,
+    )
+    daily = json.loads(
+        (output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert daily["evaluationValidation"]["fingerprintValid"] is True
+    assert daily["evaluationValidation"]["frozenTestMatched"] is True
+    assert daily["recentEvaluation"]["50"]["periods"] == 6
+
+
+def test_snapshot_conflict_does_not_partially_overwrite_daily_artifacts(tmp_path: Path):
+    csv_path = tmp_path / "fc3d.csv"
+    output_dir = tmp_path / "reports"
+    first_params = tmp_path / "first.json"
+    second_params = tmp_path / "second.json"
+    _write_csv(csv_path)
+    save_params(LearnedRankerParams(), first_params)
+    save_params(replace(LearnedRankerParams(), temperature=0.5), second_params)
+    _, daily_json, _ = generate_learned_ranker_daily(
+        "fc3d", csv_path, first_params, output_dir=output_dir
+    )
+    original = daily_json.read_bytes()
+
+    with pytest.raises(FileExistsError, match="冻结快照"):
+        generate_learned_ranker_daily(
+            "fc3d", csv_path, second_params, output_dir=output_dir
+        )
+
+    assert daily_json.read_bytes() == original
+
+
+def test_digit_report_learned_mode_routes_to_v4_and_rejects_pl5(tmp_path: Path):
+    csv_path = tmp_path / "fc3d.csv"
+    output_dir = tmp_path / "reports"
+    params_path = tmp_path / "params.json"
+    _write_csv(csv_path)
+    save_params(LearnedRankerParams(), params_path)
+
+    output = generate_digit_report_from_csv(
+        "fc3d",
+        csv_path,
+        output_dir=output_dir,
+        write_json=True,
+        ranking_mode="learned_ranker_v4",
+        learned_ranker_params_path=params_path,
+    )
+    assert output == output_dir / "learned_ranker_v4_daily" / "fc3d_daily_2026020.md"
+    assert "研究模式，不接入主推荐" in output.read_text(encoding="utf-8")
+
+    pl5_path = tmp_path / "pl5.csv"
+    pl5_path.write_text("期号,开奖号码\n1,12345\n", encoding="utf-8")
+    try:
+        generate_digit_report_from_csv(
+            "pl5",
+            pl5_path,
+            output_dir=output_dir,
+            ranking_mode="learned_ranker_v4",
+            learned_ranker_params_path=params_path,
+        )
+    except ValueError as exc:
+        assert "只支持 fc3d/pl3" in str(exc)
+    else:
+        raise AssertionError("pl5 learned_ranker_v4 必须拒绝")

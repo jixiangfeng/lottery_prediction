@@ -53,3 +53,51 @@
 - 前向 v1 满500个新开奖样本前不得作可行性结论；本地冻结还需配合开奖前版本控制或外部时间戳，才能形成独立时间证明。
 - 概率 v2 没有通过冻结前校准，当前候选是均匀分布的确定性并列打破结果，不是概率更高的号码。
 - 即使历史闸门通过，也只表示在既定严格前推样本上观察到统计优势，不能保证未来中奖或盈利。
+
+---
+
+# learned_ranker_v4 自动执行报告（2026-07-17）
+
+## 需求摘要
+
+- 按 `docs/learned_ranker_v4_design.md` 落地福彩3D/排列三固定评分 v4，并保持 v1-v3 与排列五旧路径不变。
+- 采用严格 TDD，覆盖无未来泄漏、1000 候选、稳定排序、组选概率求和、衰减单调、指纹敏感、冻结测试段和重复运行一致。
+
+## 关键假设
+
+- v4 首版只支持 `fc3d/pl3`；`pl5` 明确拒绝。
+- 冻结测试未通过或评估文件缺失时，日报固定显示“研究模式，不接入主推荐”。
+- 当前主机无 `conda` 命令，使用 `uv run --python 3.11 --with-requirements requirements-dev.txt` 的 Python 3.11.15 锁定环境。
+
+## 实现
+
+- 新增完整多窗口特征、贝叶斯平滑、半衰期衰减、窗口遗漏、趋势、上期距离/重复和约束惩罚。
+- 新增固定线性评分、softmax、稳定 tie-break、直选/组选聚合、位置复式池、组选数字池、参数 JSON 和 SHA-256 指纹。
+- 新增可复现随机/局部搜索；search/validation 选参，frozen test 不参与参数选择。
+- 新增冻结逐期前推 LogLoss、Brier、排名、TopK、逐期精确组选随机基线、单侧 p 值、分块稳定性和闸门报告。
+- 新增 train/evaluate/daily CLI、CSV/源码/参数指纹、Markdown/JSON 日报和不可覆盖冻结快照。
+- `digit-report` 与 Makefile 已接入 `learned_ranker_v4`，并提供 smoke 与正式一键命令。
+
+## 严格 TDD 记录
+
+- 第一轮 RED：缺少 `digit_learned_features` / `digit_learned_ranker` 模块；实现后 7 项 GREEN。
+- 第二轮 RED：缺少搜索与冻结前推模块；实现后 3 项 GREEN。
+- 第三轮 RED：缺少 v4 CLI；实现后 2 项 GREEN。
+- 设计补强 RED：搜索不支持多组窗口/衰减/遗漏配置；扩展后 4 项搜索/前推测试 GREEN。
+- 交付补强 RED：缺少多窗口遗漏列和近期 50/100/300 期摘要；实现后 2 项 GREEN。
+- 严格审查 RED：候选顺序索引、参数元数据篡改、非法 TopK/池大小、冻结切分重推导、伪造/损坏评估晋级、冻结产物覆盖和 validation 影响局部 search 起点共 13 项失败断言；最小修复后 v4 聚焦 27 项 GREEN。
+
+## 自测
+
+- v4 聚焦回归：27 项通过。
+- 全量 `make test`：190 项通过，覆盖率 88.83%，高于 80% 门槛。
+- `make lint`：Black、isort、flake8、mypy（28 个源码文件）通过。
+- `make build`：`src/scripts/examples` compileall 通过。
+- 完整 `make ci`：lint、test、build 全部通过。
+
+## 冒烟与边界
+
+- 已扫描仓库全部 `*.csv`，包括优先路径 `data/fc3d/official_history.csv`、`data/fc3d/data.csv`、`data/pl3/official_history.csv`、`data/pl3/data.csv`，当前均不存在，因此未执行真实开奖数据验证，也未联网下载数据。
+- 使用临时生成的 60 期三位数 CSV 实际串行执行 `train --smoke`、`evaluate`、`daily`，三条 CLI 均返回 0；生成参数、冻结评估、Markdown/JSON 日报及不可覆盖快照。
+- 冒烟评估覆盖 15 期；日报确认玩法、完整模型、参数产物、源码、报告指纹及 frozen-test 证据全部匹配。统计闸门未通过，正确保持“研究模式，不接入主推荐”。
+- 上述合成数据只证明工程链路可运行，不是预测有效性证据；彩票结果具有高度随机性，本实现不宣称预测有效，不保证中奖或盈利。
