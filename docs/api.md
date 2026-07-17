@@ -49,13 +49,30 @@ ranked, debug = compute_enhanced_scores(draws, limit=100, use_pca=True, pca_comp
 - `train_digit_ranker(...)` / `score_digit_ranker(...)`：用 `StandardScaler + LogisticRegression` 构建时间严格的候选二分类排序器；返回分数只作排序。
 - `build_advanced_model_scores(...)`：统一构建蒙特卡洛/ML 外部票及 `DigitAdvancedModelDiagnostics` 运行证据。
 - `run_digit_walk_forward_backtest(..., baseline_runs=20, nested_tuning=False, inner_validation_periods=10, advanced_models=False, compare_windows=False)`：输出多随机分布、严格嵌套调参、可选高级投票和 30/50/100/300/全历史独立窗口比较。
-- `DigitCandidateConfig(ranking_mode="ensemble")`：使用 14 个统计子模型加蒙特卡洛、ML 共 16 个投票位的过滤空间排名分位做集成排序；候选输出 `ensembleScore`、`modelRankPercentiles` 与 `topDecileVotes`。
+- `DigitCandidateConfig(ranking_mode="ensemble")`：使用 14 个统计子模型加蒙特卡洛、ML 共 16 个固定槽位的过滤空间排名分位做集成排序；inactive 外部槽位以中性 `0.5` 占位并保留固定分母，只改变绝对分值尺度，不提供相对排序信号。候选输出 `ensembleScore`、`modelRankPercentiles` 与 `topDecileVotes`，active 表示存在非中性结果或模型候选信号。
 - `DigitCandidateConfig(constraint_mode="soft", constraint_probability_floor=0.02, constraint_penalty_weight=0.05)`：提供奇偶/大小/质合结构的 `off|soft|hard` 约束；候选输出 `constraintPenalty`。
 - `generate_digit_candidates(...)`：兼容旧 `candidates` 直选字段；在 `ensemble` 模式下额外返回实际有分数的子模型 `modelCandidates` TopK。
 - `generate_digit_betting_candidates(...)`：返回直选/组选；组三和组六分别在各自无序空间重排模型分位，输出 `rankingModel=shape_specific_ensemble`，排列五组选为空。
 - `save_digit_pick_snapshot(...)` / `process_digit_pick_evaluations(...)`：保存开奖前推荐，并在后续数据中找到源期之后第一期开奖进行自动复盘和累计汇总。
 - `derive_live_ensemble_weights(evaluations, base_weights, min_samples=5)`：只基于开奖前逐模型留痕做加一平滑与±20% 封顶调权。
 
-日报 JSON `schemaVersion=2`，额外输出 `modelCandidates`、`omissionWindows`、`advancedModels` 和 `artifacts.pickSnapshot/liveSummary`；前推 JSON `schemaVersion=4`，额外输出 `modelPerformance`、`strategies`、`strategyScoreBucketDistributions`、`advancedModels` 和 `windowComparison`。
+### 数字彩理论概率与增量快照 API
+
+- `get_digit_theoretical_probabilities(rule)`：返回按规则签名缓存的精确数学枚举表，包含 `shape`、`sum`、`span`、`parity`、`bigSmall`；每次返回防御复制，`baselineType=exact_mathematical_enumeration` 且 `isPrediction=false`。
+- `analyze_digit_history_with_snapshot(df, rule, snapshot_path, *, frequency_windows, bayesian_prior_strength, all_history_window=False, rebuild=False)`：返回 `(DigitStatisticsResult, DigitStatisticsUpdateMetadata)`。首次为 `full_rebuild`，无新增为 `cache_hit`，纯追加为 `incremental`。若等待锁期间快照已被其他进程推进，且本次输入是当前快照的严格短前缀，则只在内存遍历旧输入并返回 `stale_view`，不写回快照；真实历史修正或删减仍沿用原全量重建逻辑。
+- `DigitStatisticsUpdateMetadata.to_dict()`：输出 `mode`、`addedIssues`、`processedRows`、`rebuildReason`、`requestedRebuildReason`、`snapshotPath`、`persisted`、`snapshotWritten`。`stale_view` 固定使用 `rebuildReason=stale_view_not_persisted`，并在 `requestedRebuildReason` 保留窗口、先验、schema/engine 或 `explicit_rebuild` 等原判断；`processedRows` 是实际遍历数，禁止伪装为 cache hit。`full_rebuild`/`incremental` 为 `persisted=true,snapshotWritten=true`，`cache_hit` 为 `true,false`，`stale_view` 为 `false,false`。
+- 快照 JSON 包含 schema/engine 版本、规则签名、窗口/先验配置、已处理前缀摘要、全历史聚合、10/30/50/100/300 等有界窗口状态、近期队列、遗漏状态与最新期号/号码；写入使用同目录临时文件加 `os.replace` 原子替换。
+- 自动重建原因包括 `corrupt_json`、`schema_version_mismatch`、`engine_version_mismatch`、`rule_signature_mismatch`、`window_config_mismatch`、`prior_strength_mismatch`、`history_truncated`、`historical_prefix_changed`、`non_append_issue`；显式 `rebuild=True` 为 `explicit_rebuild`。
+
+`generate_digit_report_from_csv(...)` 新增参数：
+
+- `stats_snapshot_path=None`：默认 `output_dir/state/{code}_statistics_snapshot.json`。
+- `rebuild_stats=False`：强制重建统计快照。
+- `incremental_stats=True`：关闭时直接全量分析，仅用于诊断。
+- `enable_hindsight_backtest=False`：默认不把当前候选回放全部历史；启用后恢复旧诊断输出。
+
+CLI 对应 `--stats-snapshot-path`、`--rebuild-stats`、`--no-incremental-stats`、`--hindsight-backtest`。
+
+日报 JSON `schemaVersion=2` 保持不变，旧字段只增不删，并新增 `theoreticalProbabilities`、`statisticsUpdate`、`hindsightBacktest`；`backtest` 字段继续保留，默认关闭 hindsight 时返回零检查摘要以维持结构兼容。前推 JSON `schemaVersion=4`，继续输出 `modelPerformance`、`strategies`、`strategyScoreBucketDistributions`、`advancedModels` 和 `windowComparison`，且不读取日报统计快照。
 
 所有评分、排名和回测接口仅用于历史研究，不能保证中奖。

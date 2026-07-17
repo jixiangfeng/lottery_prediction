@@ -8,7 +8,11 @@ from typing import Any
 
 import pandas as pd
 
-from src.analysis.digit_candidates import DigitCandidateConfig, DigitExternalModelScores
+from src.analysis.digit_candidates import (
+    ENSEMBLE_MODEL_NAMES,
+    DigitCandidateConfig,
+    DigitExternalModelScores,
+)
 from src.analysis.digit_ml_ranker import score_digit_ranker, train_digit_ranker
 from src.analysis.digit_monte_carlo import simulate_digit_candidates
 from src.analysis.digit_statistics import DigitStatisticsResult
@@ -29,6 +33,23 @@ class DigitAdvancedModelDiagnostics:
     ml_training_targets: int
     ml_training_samples: int
 
+    @property
+    def available_model_names(self) -> tuple[str, ...]:
+        """返回当前代码可提供的全部模型槽位。"""
+
+        return ENSEMBLE_MODEL_NAMES
+
+    @property
+    def active_model_names(self) -> tuple[str, ...]:
+        """返回本次报告提供非中性结果或模型候选信号的模型。"""
+
+        active = list(ENSEMBLE_MODEL_NAMES[:14])
+        if self.monte_carlo_enabled and self.monte_carlo_accepted > 0:
+            active.append("monteCarlo")
+        if self.ml_enabled and self.ml_trained:
+            active.append("mlRanker")
+        return tuple(active)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "monteCarloEnabled": self.monte_carlo_enabled,
@@ -40,6 +61,10 @@ class DigitAdvancedModelDiagnostics:
             "mlTrained": self.ml_trained,
             "mlTrainingTargets": self.ml_training_targets,
             "mlTrainingSamples": self.ml_training_samples,
+            "activeModelNames": list(self.active_model_names),
+            "activeModelCount": len(self.active_model_names),
+            "availableModelNames": list(self.available_model_names),
+            "availableModelCount": len(self.available_model_names),
         }
 
 

@@ -17,7 +17,7 @@
 - 🔢 `src/analysis/digit_statistics.py`：数字彩通用统计模块，支持位置、位置对、和值、跨度、形态、奇偶/大小/质合、连号、镜像、和值尾、上期距离、同位重号和遗漏统计。
 - 🧹 `src/analysis/digit_data.py`：数字彩 CSV/DataFrame 标准化模块，支持期号/开奖号码列名识别、合并号码拆位、范围校验和按期号排序。
 - 📄 `src/analysis/digit_report.py` / `scripts/digit_report.py`：从本地 CSV 生成福彩3D、排列三、排列五 Markdown 分析日报。
-- 🎯 `src/analysis/digit_candidates.py`：枚举三位 1000 种/五位 100000 种完整空间，支持启发式复合分与 16 投票器集成排序，再执行形态配额和确定性多样性选择。
+- 🎯 `src/analysis/digit_candidates.py`：以 NumPy 紧凑数组复用三位 1000 种/五位 100000 种静态空间和特征，只为选择所需候选构造对象；支持启发式复合分与最多 16 个投票器集成排序，再执行形态配额和确定性多样性选择。
 - 🧠 `src/analysis/digit_advanced_models.py`：统一接入多窗口蒙特卡洛模拟和 sklearn 逻辑回归候选排序，两者均只作排序票。
 - 📈 `src/analysis/digit_backtest.py`：数字彩候选回测模块，支持三位直选/组选命中和排列五直选命中统计。
 - 🧪 `src/analysis/digit_walk_forward.py` / `scripts/digit_walk_forward.py`：严格逐期前推回测，每个目标期只使用此前历史，并与 `uniform_random` 基线对比。
@@ -118,13 +118,29 @@ stats = analyze_digit_history(df, rule)
 奇偶比
 大小比
 最新期号与最新号码
+按玩法规则精确枚举的理论概率数学基线：形态、和值、跨度、奇偶比、大小比
 ```
 
-这些特征只描述历史分布，不能保证预测命中；当前数字彩使用本地 CSV，候选生成、回测和报告已接入，自动下载与 H5 展示仍未接入。
+理论概率与经验统计分层展示：理论层按规则枚举全部等可能号码，三位彩精确为豹子 1%、组三 27%、组六 72%；经验层来自已开奖历史及贝叶斯平滑。两层都不是下一期预测，也不能保证预测命中。当前数字彩使用本地 CSV，候选生成、回测和报告已接入，自动下载与 H5 展示仍未接入。
+
+### 数字彩日常增量统计
+
+`digit-report` 默认使用“首次全量、之后增量”的 JSON 快照，默认路径为 `reports/state/<lottery>_statistics_snapshot.json`。首次运行会处理全部历史；数据不变时直接 `cache_hit`；只追加新期时仅更新新增行、全历史聚合、遗漏和有界近期窗口。若调用方在等待锁期间持有的旧历史是当前较新快照的严格短前缀，则返回内存全量计算的 `stale_view`，但绝不降级覆盖快照；此时 `processedRows` 为实际遍历行数、`rebuildReason=stale_view_not_persisted`、`persisted=false`、`snapshotWritten=false`，窗口/先验/显式重建等原请求原因保存在 `requestedRebuildReason`。正常 `full_rebuild`/`incremental` 的两个持久化字段均为 `true`；`cache_hit` 为 `persisted=true`、`snapshotWritten=false`。
+
+```bash
+.venv/bin/python scripts/digit_report.py --lottery fc3d --csv data/fc3d.csv --json
+.venv/bin/python scripts/digit_report.py --lottery fc3d --csv data/fc3d.csv --json --rebuild-stats
+```
+
+快照在损坏、版本/规则/窗口/先验不匹配、历史删减、已处理号码修正或非追加期号时自动全量重建；`--rebuild-stats` 可手动强制重建，`--no-incremental-stats` 仅用于诊断全量口径。固定窗口与动态全历史使用稳定的 `allHistory` 签名，因此总期数碰到 10/30/50/100/300 或自定义固定窗口时不会误判配置变化。全历史窗口从聚合计数重建，近期队列默认最多保留 300 期，不会把全部历史塞入近期队列。
+
+cache hit 和追加仍会对输入前缀做 O(n) 的轻量 SHA-256 完整性校验，用于发现历史修正；该校验不调用全量统计。概率重建直接使用 Counter 与样本量套用 Dirichlet 公式，时间和额外内存只依赖特征域大小。macOS/Linux 使用固定 `.lock` 文件上的 `fcntl.flock` 覆盖“读取、校验、增量、原子替换”整个事务；日报 Markdown/JSON 同样使用临时文件、`fsync` 与 `os.replace` 原子落盘。
+
+日报默认关闭“把今天候选回放全部历史”的 hindsight 回放，因为它会重复全扫且不是有效预测证据；如需迁移诊断可显式传 `--hindsight-backtest`。日常复盘优先使用开奖前已保存的 prediction snapshot。严格逐期前推回测继续按每个目标期的历史截止点独立调用 `analyze_digit_history(...)`，不读取日报最新快照，避免未来数据泄漏。
 
 第二轮候选评分使用可配置的启发式复合对数分：位置边际、位置对、形态、和值、跨度为主，遗漏仅保留小权重辅助。由于特征存在重叠，该分数不是规范联合概率，也不是实际开奖概率。三位彩额外提供 `directCandidates` 与按无序数字集合聚合过滤空间归一化模型质量的 `groupCandidates`；旧 `candidates` 字段继续表示直选候选，排列五的 `groupCandidates` 固定为空。候选 JSON 新增 `modelWeight` / `compositeModelWeight`；旧 `jointProbability` 与 `probabilityMass` 仅作 deprecated 兼容保留。
 
-当前日报默认使用 16 投票器集成：14 个统计子模型（位置、位置对、形态、和值、跨度、奇偶、大小、质合、连号、镜像、和值尾、上期距离、同位重号、遗漏）加蒙特卡洛和 sklearn 逻辑回归排序器。所有票先在同一过滤空间转为并列中位排名分位，再按固定权重融合。报告输出 `ensembleScore`、`modelRankPercentiles`、`topDecileVotes` 和 `advancedModels` 运行证据；可用 `--no-monte-carlo` / `--no-ml` 关闭高级票，或用 `--ranking-mode composite` 回退旧复合排序作为对照。集成分和分类器分数都不是实际开奖概率。
+集成排序固定提供 14 个统计子模型（位置、位置对、形态、和值、跨度、奇偶、大小、质合、连号、镜像、和值尾、上期距离、同位重号、遗漏），并保留蒙特卡洛与 sklearn 逻辑回归排序器槽位，完整配置为 16 个槽位。各槽位在同一过滤空间转为并列中位排名分位，再按固定权重和固定分母融合；未产出结果的蒙特卡洛/ML 槽位使用中性 `0.5` 占位以保持兼容，因此会改变 `ensembleScore` 的绝对尺度，但不会提供候选间的相对排序信号。Markdown/JSON 会输出 `activeModelNames`、`activeModelCount`、`availableModelNames`、`availableModelCount`；其中 active 表示模型提供了非中性结果或模型候选信号，不表示只有 active 槽位参与数学公式。`ensembleScore`、分类器输出与 `compositeModelWeight` 都只用于排序或过滤空间内相对质量，不是实际开奖概率。
 
 每期快照会额外保存实际启用子模型各自的 TopK 候选；开奖后累计 `modelPerformance` 并产出建议权重。单模型样本满 5 期后，日报才使用加一平滑结果保守调权，每个模型相对基础权重最多浮动 20%。旧快照没有逐模型字段时保持基础权重。
 
@@ -222,7 +238,7 @@ make digit-walk-forward \
   DIGIT_WF_INNER_VALIDATION_PERIODS=10
 ```
 
-CLI 对应参数为 `--baseline-runs`、`--nested-tuning`、`--inner-validation-periods`、`--advanced-models`、`--monte-carlo-simulations`、`--ml-training-periods`、`--ml-negative-samples`、`--compare-windows`、`--constraint-mode`、`--constraint-probability-floor`、`--constraint-penalty-weight` 与 `--report-prefix`。报告以直选/组选命中及其随机基线百分位为主，同时输出逐模型 TopK 命中、真实开奖号的模型排名分位桶与独立窗口稳定分；位置覆盖与 `candidateScorePercentile` 仅是选择器内部诊断。后者采用 mid-rank，所有随机运行分数打平时可能显示 50%，不代表预测优势。任何历史回测结果都不能保证未来中奖，也不得根据外层目标期开奖结果反向选择配置。
+CLI 对应参数为 `--baseline-runs`、`--nested-tuning`、`--inner-validation-periods`、`--advanced-models`、`--monte-carlo-simulations`、`--ml-training-periods`、`--ml-negative-samples`、`--compare-windows`、`--constraint-mode`、`--constraint-probability-floor`、`--constraint-penalty-weight` 与 `--report-prefix`。注意：`make digit-walk-forward` 默认传入 `--advanced-models`，直接运行 `scripts/digit_walk_forward.py` 则需显式添加该开关；数字彩日报 CLI/API 继续保持默认启用高级模型，可用 `--no-monte-carlo` / `--no-ml` 关闭。报告以直选/组选命中及其随机基线百分位为主，同时输出实际启用模型、逐模型 TopK 命中、真实开奖号的模型排名分位桶与独立窗口稳定分；位置覆盖与 `candidateScorePercentile` 仅是选择器内部诊断。后者采用 mid-rank，所有随机运行分数打平时可能显示 50%，不代表预测优势。任何历史回测结果都不能保证未来中奖，也不得根据外层目标期开奖结果反向选择配置。
 
 也可直接运行：
 

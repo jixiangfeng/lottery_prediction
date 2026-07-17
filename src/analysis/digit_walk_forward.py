@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
@@ -18,6 +19,7 @@ import pandas as pd
 
 from src.analysis.digit_advanced_models import build_advanced_model_scores
 from src.analysis.digit_candidates import (
+    ENSEMBLE_MODEL_NAMES,
     DigitCandidateConfig,
     DigitCandidateResult,
     generate_digit_betting_candidates,
@@ -137,6 +139,9 @@ class DigitWalkForwardReport:
     advanced_models: bool
     window_comparison: list[dict[str, Any]]
     model_performance: dict[str, dict[str, float | int]]
+    active_model_names: tuple[str, ...]
+    available_model_names: tuple[str, ...]
+    model_activation_counts: dict[str, int]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -157,6 +162,11 @@ class DigitWalkForwardReport:
             "advancedModels": self.advanced_models,
             "windowComparison": self.window_comparison,
             "modelPerformance": self.model_performance,
+            "activeModelNames": list(self.active_model_names),
+            "activeModelCount": len(self.active_model_names),
+            "availableModelNames": list(self.available_model_names),
+            "availableModelCount": len(self.available_model_names),
+            "modelActivationCounts": self.model_activation_counts,
             "disclaimer": "严格逐期前推仅用于历史验证，随机基线和统计策略都不能保证提高中奖概率。",
         }
 
@@ -643,6 +653,7 @@ def run_digit_walk_forward_backtest(
     ensemble_issues: list[DigitWalkForwardIssue] = []
     window_evidence: dict[str, list[tuple[bool, float]]] = {}
     model_evidence: dict[str, list[bool]] = {}
+    model_activation_counts: Counter[str] = Counter()
     baseline_issue_runs: list[list[DigitWalkForwardIssue]] = [
         [] for _ in range(baseline_runs)
     ]
@@ -740,6 +751,7 @@ def run_digit_walk_forward_backtest(
             group_count=candidate_count,
             external_scores=external_scores,
         )
+        model_activation_counts.update(ensemble_plan.model_candidates.keys())
         actual_text = _candidate_text(actual_numbers)
         for model_name, model_candidates in ensemble_plan.model_candidates.items():
             model_evidence.setdefault(model_name, []).append(
@@ -871,6 +883,13 @@ def run_digit_walk_forward_backtest(
         advanced_models=advanced_models,
         window_comparison=window_comparison,
         model_performance=model_performance,
+        active_model_names=tuple(
+            name for name in ENSEMBLE_MODEL_NAMES if model_activation_counts[name] > 0
+        ),
+        available_model_names=ENSEMBLE_MODEL_NAMES,
+        model_activation_counts={
+            name: model_activation_counts[name] for name in ENSEMBLE_MODEL_NAMES
+        },
     )
 
 
@@ -886,6 +905,8 @@ def build_digit_walk_forward_markdown(report: DigitWalkForwardReport) -> str:
         f"- 随机基线独立运行：`{report.baseline_runs}` 次",
         f"- 嵌套调参：`{'开启' if report.nested_tuning else '关闭'}`（内层验证 {report.inner_validation_periods} 期）",
         f"- 蒙特卡洛/机器学习外部投票：`{'开启' if report.advanced_models else '关闭'}`",
+        f"- 实际启用模型（{len(report.active_model_names)}/{len(report.available_model_names)}）："
+        f"`{', '.join(report.active_model_names)}`",
         "- 对比策略：`current_statistics`、`ensemble_voting` 与 `uniform_random`",
         "- 主指标：直选/组选命中与命中随机基线百分位；位置覆盖和候选分位仅作诊断。",
         "",

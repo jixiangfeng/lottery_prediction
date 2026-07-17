@@ -991,7 +991,6 @@ if __name__ == "__main__":
         ori_numpy = ori_numpy[index_diff:]
     
     if args.rule_filter in {"soft", "hard"}:
-        global rule_filter
         filter_kwargs = {}
         if args.rule_support > 0:
             filter_kwargs["min_support"] = args.rule_support

@@ -62,9 +62,9 @@ test: ## 运行测试与覆盖率
 	@echo "运行 pytest..."
 	$(RUN) -m pytest tests -q
 
-build: ## 生成可分发的 pyc 产物
+build: ## 检查 src/scripts 语法并生成 pyc
 	@echo "编译 Python 字节码..."
-	$(PYTHON) -m compileall src
+	$(PYTHON) -m compileall -q src scripts
 
 run: ## 执行示例（需要已有数据文件）
 	@echo "运行快乐8高频号码统计示例..."
@@ -119,8 +119,8 @@ help: ## 查看可用命令
 	@echo "  make download-data  - 下载快乐8历史数据"
 	@echo "  make daily          - 更新数据并生成日报/推荐快照/复盘/累计汇总"
 	@echo "  make walk-forward-kl8 - 快乐8逐期前推策略回测（WF_PERIODS=300）"
-	@echo "  make digit-report   - 从本地CSV生成数字彩报告（DIGIT_LOTTERY=fc3d|pl3|pl5 DIGIT_CSV=...）"
-	@echo "  make digit-walk-forward - 数字彩严格逐期前推（支持 BASELINE_RUNS 与 NESTED_TUNING）"
+	@echo "  make digit-report   - 数字彩日报（默认启用 Monte Carlo/ML，可用 DIGIT_ENABLE_*=0 关闭）"
+	@echo "  make digit-walk-forward - 数字彩严格前推（Makefile 默认高级模型；直接 CLI 需 --advanced-models）"
 	@echo "  make h5-install     - 安装 Vue3 H5 用户端依赖"
 	@echo "  make h5-dev         - 同步数据并启动 Vue3 H5 开发服务"
 	@echo "  make h5-build       - 同步数据并构建 Vue3 H5 产物"
@@ -128,7 +128,7 @@ help: ## 查看可用命令
 	@echo "  make fmt            - 格式化代码"
 	@echo "  make lint           - 静态检查"
 	@echo "  make test           - 运行测试"
-	@echo "  make build          - 生成 pyc 产物"
+	@echo "  make build          - compileall 检查 src 与 scripts"
 	@echo "  make run            - 运行示例分析"
 	@echo "  make train-graph    - 训练共现图嵌入缓存"
 	@echo "  make ci             - 本地 CI（fmt+lint+test+build）"

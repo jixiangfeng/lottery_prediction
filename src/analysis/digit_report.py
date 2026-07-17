@@ -5,25 +5,29 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
-from src.analysis.digit_backtest import (
-    DigitBacktestSummary,
-    build_digit_backtest_markdown,
-    backtest_digit_candidates,
-)
-from src.analysis.digit_advanced_models import (
-    DigitAdvancedModelDiagnostics,
-    build_advanced_model_scores,
-)
 from src.analysis.betting_plan import (
     BettingPlan,
     build_betting_plan_markdown,
     build_digit_betting_plan,
 )
+from src.analysis.digit_advanced_models import (
+    DigitAdvancedModelDiagnostics,
+    build_advanced_model_scores,
+)
+from src.analysis.digit_backtest import (
+    DigitBacktestSummary,
+    backtest_digit_candidates,
+    build_digit_backtest_markdown,
+)
 from src.analysis.digit_candidates import (
+    ENSEMBLE_MODEL_NAMES,
     DigitBettingCandidateResult,
     DigitCandidateConfig,
     DigitCandidateResult,
@@ -37,10 +41,33 @@ from src.analysis.digit_pick_tracking import (
     save_digit_pick_snapshot,
 )
 from src.analysis.digit_statistics import DigitStatisticsResult, analyze_digit_history
+from src.analysis.digit_statistics_snapshot import (
+    DigitStatisticsUpdateMetadata,
+    analyze_digit_history_with_snapshot,
+)
 from src.lotteries import get_lottery_rule
 
 
-def _top_items(counter: Counter, limit: int = 5) -> list[tuple[object, int]]:
+def _atomic_write_text(path: Path, content: str) -> None:
+    """以同目录临时文件原子替换 UTF-8 文本。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _top_items(counter: Counter[Any], limit: int = 5) -> list[tuple[object, int]]:
     return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]
 
 
@@ -59,6 +86,8 @@ def build_digit_report_markdown(
     pick_snapshot_path: Path | None = None,
     evaluated_pick_count: int = 0,
     advanced_model_diagnostics: DigitAdvancedModelDiagnostics | None = None,
+    statistics_update: DigitStatisticsUpdateMetadata | dict[str, object] | None = None,
+    hindsight_backtest_enabled: bool = True,
 ) -> str:
     """根据数字彩统计结果生成 Markdown 报告。"""
 
@@ -75,25 +104,78 @@ def build_digit_report_markdown(
         "## 位置频率 Top",
         "",
     ]
+    update_payload = (
+        statistics_update.to_dict()
+        if isinstance(statistics_update, DigitStatisticsUpdateMetadata)
+        else statistics_update
+    )
+    if update_payload is not None:
+        lines[8:8] = [
+            "## 统计更新",
+            "",
+            f"- 统计更新：`{update_payload['mode']}`",
+            f"- 本次新增：`{update_payload['addedIssues']}` 期；实际处理：`{update_payload['processedRows']}` 行",
+            f"- 快照路径：`{update_payload['snapshotPath']}`",
+            f"- 重建原因：`{update_payload['rebuildReason'] or '-'}`",
+            f"- 原请求重建原因：`{update_payload.get('requestedRebuildReason') or '-'}`",
+            f"- 结果已持久化：`{bool(update_payload.get('persisted'))}`；本次写入快照：`{bool(update_payload.get('snapshotWritten'))}`",
+            "",
+        ]
+
+    theoretical = stats.theoretical_probabilities
+    shape_summary = "，".join(
+        f"{shape} {probability:.2%}"
+        for shape, probability in theoretical["shape"].items()
+    )
+    feature_summaries: list[str] = []
+    for feature, feature_label in (
+        ("sum", "和值"),
+        ("span", "跨度"),
+        ("parity", "奇偶比"),
+        ("bigSmall", "大小比"),
+    ):
+        theoretical_top = sorted(
+            theoretical[feature].items(), key=lambda item: (-item[1], str(item[0]))
+        )[:3]
+        feature_summaries.append(
+            f"- {feature_label}高概率数学分布项："
+            + "，".join(
+                f"{value} {probability:.2%}" for value, probability in theoretical_top
+            )
+        )
+    lines[8:8] = [
+        "## 理论概率摘要：数学基线（不是预测）",
+        "",
+        f"- 精确枚举样本空间：`{theoretical['sampleSpaceSize']}` 种等可能号码。",
+        f"- 形态：{shape_summary}",
+        *feature_summaries,
+        "- 以上是玩法规则的精确数学基线，用于对照经验统计，不预测下一期开奖。",
+        "",
+    ]
     for position, counter in stats.position_frequency.items():
-        top = "，".join(
+        position_top = "，".join(
             f"{digit}:{count}" for digit, count in _top_items(counter, top_n)
         )
-        lines.append(f"- {position}：{top}")
+        lines.append(f"- {position}：{position_top}")
 
     lines.extend(["", "## 当前遗漏 Top", ""])
     for position, omission in stats.current_omission.items():
-        top = sorted(omission.items(), key=lambda item: (-item[1], item[0]))[:top_n]
-        text = "，".join(f"{digit}:{miss}" for digit, miss in top)
+        omission_top = sorted(omission.items(), key=lambda item: (-item[1], item[0]))[
+            :top_n
+        ]
+        text = "，".join(f"{digit}:{miss}" for digit, miss in omission_top)
         lines.append(f"- {position}：{text}")
 
     lines.extend(["", "## 多窗口遗漏", ""])
     for window, positions in sorted(stats.omission_windows.items()):
         values = []
         for position, omission in positions.items():
-            top = sorted(omission.items(), key=lambda item: (-item[1], item[0]))[:3]
+            window_top = sorted(omission.items(), key=lambda item: (-item[1], item[0]))[
+                :3
+            ]
             values.append(
-                f"{position} " + "/".join(f"{digit}:{miss}" for digit, miss in top)
+                f"{position} "
+                + "/".join(f"{digit}:{miss}" for digit, miss in window_top)
             )
         lines.append(f"- {window} 期：" + "；".join(values))
 
@@ -118,20 +200,27 @@ def build_digit_report_markdown(
         lines.append(f"- {shape}：{count}期")
 
     lines.extend(["", "## 奇偶 / 大小", "", "### 奇偶分布", ""])
-    for label, count in _top_items(stats.parity_distribution, top_n):
-        lines.append(f"- {label}：{count}期")
+    for distribution_label, count in _top_items(stats.parity_distribution, top_n):
+        lines.append(f"- {distribution_label}：{count}期")
 
     lines.extend(["", "### 大小分布", ""])
-    for label, count in _top_items(stats.big_small_distribution, top_n):
-        lines.append(f"- {label}：{count}期")
+    for distribution_label, count in _top_items(stats.big_small_distribution, top_n):
+        lines.append(f"- {distribution_label}：{count}期")
 
     if candidates is not None and candidates.candidates:
         lines.extend(["", "## 统计候选", ""])
         lines.append("### 直选候选")
         lines.append("")
         if candidates.config.ranking_mode == "ensemble":
+            active_names = (
+                advanced_model_diagnostics.active_model_names
+                if advanced_model_diagnostics is not None
+                else tuple(candidates.model_candidates)
+            )
             lines.append(
-                "以下候选使用 14 个统计子模型加蒙特卡洛、ML 共 16 个投票位的排名分位做集成投票；集成分和票数只表示历史排序，不是实际开奖概率。"
+                f"以下候选按实际启用模型（{len(active_names)}/{len(ENSEMBLE_MODEL_NAMES)}）"
+                f"的排名分位做集成投票：`{', '.join(active_names)}`。"
+                "集成分和票数只表示历史排序，不是实际开奖概率。"
             )
         else:
             lines.append(
@@ -162,25 +251,35 @@ def build_digit_report_markdown(
                     "组选只比较数字集合，不要求位置顺序；过滤空间归一化模型质量不是实际开奖概率。"
                 )
             lines.append("")
-            for index, candidate in enumerate(candidate_plan.group_candidates, 1):
+            for index, group_candidate in enumerate(candidate_plan.group_candidates, 1):
                 if candidates.config.ranking_mode == "ensemble":
                     lines.append(
-                        f"{index}. `{candidate.group_key}` - 形态 {candidate.shape}，"
-                        f"形态内集成分 {candidate.ensemble_score:.4f}，"
-                        f"排列数 {candidate.permutations}（不是实际开奖概率）"
+                        f"{index}. `{group_candidate.group_key}` - 形态 {group_candidate.shape}，"
+                        f"形态内集成分 {group_candidate.ensemble_score:.4f}，"
+                        f"排列数 {group_candidate.permutations}（不是实际开奖概率）"
                     )
                 else:
                     lines.append(
-                        f"{index}. `{candidate.group_key}` - 形态 {candidate.shape}，"
-                        f"过滤空间归一化模型质量 {candidate.composite_model_weight:.6f}，"
-                        f"排列数 {candidate.permutations}（不是实际开奖概率）"
+                        f"{index}. `{group_candidate.group_key}` - 形态 {group_candidate.shape}，"
+                        f"过滤空间归一化模型质量 {group_candidate.composite_model_weight:.6f}，"
+                        f"排列数 {group_candidate.permutations}（不是实际开奖概率）"
                     )
 
     if betting_plan is not None:
         lines.extend(["", build_betting_plan_markdown(betting_plan).rstrip()])
 
-    if backtest_markdown:
+    if hindsight_backtest_enabled and backtest_markdown:
         lines.extend(["", backtest_markdown.rstrip()])
+    elif not hindsight_backtest_enabled:
+        lines.extend(
+            [
+                "",
+                "## 历史回放迁移说明",
+                "",
+                "- 默认关闭“把今天候选回放全部历史”的 hindsight 回放，避免把事后匹配误当作预测证据并减少重复全量扫描。",
+                "- 日报优先复盘开奖前已保存的 prediction snapshot；如需诊断旧口径，可显式启用 hindsight 回放。",
+            ]
+        )
 
     if advanced_model_diagnostics is not None:
         diagnostics = advanced_model_diagnostics
@@ -189,6 +288,8 @@ def build_digit_report_markdown(
                 "",
                 "## 高级模型状态",
                 "",
+                f"- 实际启用模型（{len(diagnostics.active_model_names)}/{len(diagnostics.available_model_names)}）："
+                f"`{', '.join(diagnostics.active_model_names)}`",
                 f"- 蒙特卡洛：`{'启用' if diagnostics.monte_carlo_enabled else '关闭'}`，"
                 f"模拟 `{diagnostics.monte_carlo_simulations}` 次，过滤后接受 `{diagnostics.monte_carlo_accepted}` 次",
                 f"- 联合蒙特卡洛：位置对条件 `{'开启' if diagnostics.monte_carlo_pair_conditioned else '关闭'}`，"
@@ -235,9 +336,16 @@ def build_digit_report_data(
     pick_snapshot_path: Path | None = None,
     live_summary_path: Path | None = None,
     advanced_model_diagnostics: DigitAdvancedModelDiagnostics | None = None,
-) -> dict:
+    statistics_update: DigitStatisticsUpdateMetadata | dict[str, object] | None = None,
+    hindsight_backtest_enabled: bool = True,
+) -> dict[str, Any]:
     """生成前端友好的数字彩 JSON 数据。"""
 
+    update_payload = (
+        statistics_update.to_dict()
+        if isinstance(statistics_update, DigitStatisticsUpdateMetadata)
+        else statistics_update
+    )
     return {
         "schemaVersion": 2,
         "lottery": {
@@ -261,6 +369,8 @@ def build_digit_report_data(
         "shapeDistribution": dict(stats.shape_distribution),
         "parityDistribution": dict(stats.parity_distribution),
         "bigSmallDistribution": dict(stats.big_small_distribution),
+        "theoreticalProbabilities": stats.theoretical_probabilities,
+        "statisticsUpdate": update_payload,
         "candidates": [candidate.to_dict() for candidate in candidates.candidates],
         "modelCandidates": candidates.model_candidates,
         "directCandidates": [
@@ -278,6 +388,14 @@ def build_digit_report_data(
             else None
         ),
         "backtest": backtest.to_dict(),
+        "hindsightBacktest": {
+            "enabled": hindsight_backtest_enabled,
+            "migration": (
+                None
+                if hindsight_backtest_enabled
+                else "默认关闭当前候选全历史事后回放；优先使用开奖前 prediction snapshot 实盘复盘。"
+            ),
+        },
         "bettingPlan": betting_plan.to_dict() if betting_plan is not None else None,
         "artifacts": {
             "markdown": str(markdown_path) if markdown_path is not None else None,
@@ -309,6 +427,10 @@ def generate_digit_report_from_csv(
     constraint_mode: str = "soft",
     constraint_probability_floor: float = 0.02,
     constraint_penalty_weight: float = 0.05,
+    stats_snapshot_path: str | Path | None = None,
+    rebuild_stats: bool = False,
+    incremental_stats: bool = True,
+    enable_hindsight_backtest: bool = False,
 ) -> Path:
     """从数字彩 CSV 生成 Markdown 分析报告。"""
 
@@ -321,27 +443,52 @@ def generate_digit_report_from_csv(
         report_dir / "picks" / "digit",
         report_dir / "evaluations",
     )
-    base_config = with_all_history_window(
-        DigitCandidateConfig(
-            count=candidate_count,
-            ranking_mode=ranking_mode,
-            constraint_mode=constraint_mode,
-            constraint_probability_floor=constraint_probability_floor,
-            constraint_penalty_weight=constraint_penalty_weight,
-        ),
-        len(df),
+    configured_candidate = DigitCandidateConfig(
+        count=candidate_count,
+        ranking_mode=ranking_mode,
+        constraint_mode=constraint_mode,
+        constraint_probability_floor=constraint_probability_floor,
+        constraint_penalty_weight=constraint_penalty_weight,
     )
+    base_config = with_all_history_window(configured_candidate, len(df))
     candidate_config = replace(
         base_config,
         ensemble_model_weights=derive_live_ensemble_weights(
             evaluations, base_config.ensemble_model_weights
         ),
     )
-    stats = analyze_digit_history(
-        df,
-        rule,
-        frequency_windows=candidate_config.frequency_windows,
-    )
+    statistics_update: DigitStatisticsUpdateMetadata | dict[str, object]
+    if incremental_stats:
+        effective_snapshot_path = (
+            Path(stats_snapshot_path)
+            if stats_snapshot_path
+            else (report_dir / "state" / f"{rule.code}_statistics_snapshot.json")
+        )
+        stats, statistics_update = analyze_digit_history_with_snapshot(
+            df,
+            rule,
+            effective_snapshot_path,
+            frequency_windows=candidate_config.frequency_windows,
+            fixed_frequency_windows=configured_candidate.frequency_windows,
+            all_history_window=True,
+            rebuild=rebuild_stats,
+        )
+    else:
+        stats = analyze_digit_history(
+            df,
+            rule,
+            frequency_windows=candidate_config.frequency_windows,
+        )
+        statistics_update = {
+            "mode": "full_rebuild",
+            "addedIssues": len(df),
+            "processedRows": len(df),
+            "rebuildReason": "incremental_disabled",
+            "requestedRebuildReason": None,
+            "snapshotPath": str(stats_snapshot_path) if stats_snapshot_path else None,
+            "persisted": False,
+            "snapshotWritten": False,
+        }
     external_scores, advanced_model_diagnostics = build_advanced_model_scores(
         df,
         stats,
@@ -369,16 +516,31 @@ def generate_digit_report_from_csv(
         candidate_plan.model_candidates,
     )
     betting_plan = build_digit_betting_plan(candidates)
-    backtest = backtest_digit_candidates(df, rule, candidates)
-    backtest_markdown = build_digit_backtest_markdown(backtest)
+    if enable_hindsight_backtest:
+        backtest = backtest_digit_candidates(df, rule, candidates)
+        backtest_markdown = build_digit_backtest_markdown(backtest)
+    else:
+        backtest = DigitBacktestSummary(
+            rule_code=rule.code,
+            display_name=rule.display_name,
+            draw_count=0,
+            candidate_count=len(candidates.candidates),
+            total_checks=0,
+            direct_hits=0,
+            direct_hit_rate=0.0,
+            group_hits=0 if rule.draw_count == 3 else None,
+            group_hit_rate=0.0 if rule.draw_count == 3 else None,
+            rows=[],
+        )
+        backtest_markdown = None
     pick_snapshot_path = save_digit_pick_snapshot(
         stats,
         candidate_plan,
         report_dir / "picks" / "digit",
     )
     output_path = report_dir / f"{rule.code}_daily_{stats.latest_issue}.md"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
+    _atomic_write_text(
+        output_path,
         build_digit_report_markdown(
             stats,
             top_n=top_n,
@@ -389,15 +551,16 @@ def generate_digit_report_from_csv(
             pick_snapshot_path=pick_snapshot_path,
             evaluated_pick_count=len(evaluations),
             advanced_model_diagnostics=advanced_model_diagnostics,
+            statistics_update=statistics_update,
+            hindsight_backtest_enabled=enable_hindsight_backtest,
         ),
-        encoding="utf-8",
     )
     if write_json:
         json_path = (
             Path(output_dir) / "data" / f"{rule.code}_daily_{stats.latest_issue}.json"
         )
-        json_path.parent.mkdir(parents=True, exist_ok=True)
-        json_path.write_text(
+        _atomic_write_text(
+            json_path,
             json.dumps(
                 build_digit_report_data(
                     stats,
@@ -409,11 +572,12 @@ def generate_digit_report_from_csv(
                     pick_snapshot_path=pick_snapshot_path,
                     live_summary_path=live_summary_path,
                     advanced_model_diagnostics=advanced_model_diagnostics,
+                    statistics_update=statistics_update,
+                    hindsight_backtest_enabled=enable_hindsight_backtest,
                 ),
                 ensure_ascii=False,
                 indent=2,
             ),
-            encoding="utf-8",
         )
     return output_path
 
@@ -474,6 +638,25 @@ def main(argv: list[str] | None = None) -> int:
         default=0.05,
         help="soft 模式罕见结构惩罚权重",
     )
+    parser.add_argument(
+        "--stats-snapshot-path",
+        help="数字彩增量统计快照路径；默认位于 output-dir/state",
+    )
+    parser.add_argument(
+        "--rebuild-stats",
+        action="store_true",
+        help="忽略现有统计快照并强制全量重建",
+    )
+    parser.add_argument(
+        "--no-incremental-stats",
+        action="store_true",
+        help="关闭增量统计，仅用于诊断全量口径",
+    )
+    parser.add_argument(
+        "--hindsight-backtest",
+        action="store_true",
+        help="显式启用把当前候选回放全部历史的旧诊断口径",
+    )
     args = parser.parse_args(argv)
 
     output = generate_digit_report_from_csv(
@@ -492,6 +675,10 @@ def main(argv: list[str] | None = None) -> int:
         constraint_mode=args.constraint_mode,
         constraint_probability_floor=args.constraint_probability_floor,
         constraint_penalty_weight=args.constraint_penalty_weight,
+        stats_snapshot_path=args.stats_snapshot_path,
+        rebuild_stats=args.rebuild_stats,
+        incremental_stats=not args.no_incremental_stats,
+        enable_hindsight_backtest=args.hindsight_backtest,
     )
     print(output)
     return 0

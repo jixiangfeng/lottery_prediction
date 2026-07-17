@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import itertools
 from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Sequence
+from functools import lru_cache
+from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
@@ -55,6 +57,7 @@ class DigitStatisticsResult:
     shape_distribution: Counter[str]
     parity_distribution: Counter[str]
     big_small_distribution: Counter[str]
+    theoretical_probabilities: dict[str, Any]
     latest_issue: str
     latest_numbers: list[int]
 
@@ -188,6 +191,7 @@ class DigitStatisticsResult:
             "shapeDistribution": dict(self.shape_distribution),
             "parityDistribution": dict(self.parity_distribution),
             "bigSmallDistribution": dict(self.big_small_distribution),
+            "theoreticalProbabilities": deepcopy(self.theoretical_probabilities),
             "latestIssue": self.latest_issue,
             "latestNumbers": self.latest_numbers,
         }
@@ -245,6 +249,77 @@ def _big_small_label(numbers: Sequence[int]) -> str:
     big = sum(1 for number in numbers if int(number) >= 5)
     small = len(numbers) - big
     return f"大{big}小{small}"
+
+
+def _rule_signature(rule: LotteryRule) -> tuple[Any, ...]:
+    return (
+        rule.draw_count,
+        rule.allow_repeated,
+        tuple(
+            (spec.name, spec.min_number, spec.max_number) for spec in rule.ball_specs
+        ),
+    )
+
+
+@lru_cache(maxsize=None)
+def _cached_digit_theoretical_probabilities(
+    signature: tuple[Any, ...],
+) -> tuple[tuple[str, Any], ...]:
+    draw_count, allow_repeated, specs = signature
+    domains = [range(minimum, maximum + 1) for _, minimum, maximum in specs]
+    counters: dict[str, Counter[Any]] = {
+        "shape": Counter(),
+        "sum": Counter(),
+        "span": Counter(),
+        "parity": Counter(),
+        "bigSmall": Counter(),
+    }
+    sample_space_size = 0
+    for numbers in itertools.product(*domains):
+        if not allow_repeated and len(set(numbers)) != len(numbers):
+            continue
+        sample_space_size += 1
+        counters["shape"][classify_digit_shape(numbers)] += 1
+        counters["sum"][sum(numbers)] += 1
+        counters["span"][max(numbers) - min(numbers)] += 1
+        counters["parity"][_parity_label(numbers)] += 1
+        counters["bigSmall"][_big_small_label(numbers)] += 1
+
+    if sample_space_size == 0:
+        raise ValueError(f"玩法 {signature!r} 的理论枚举无合法组合")
+
+    probability_items = tuple(
+        (
+            feature,
+            tuple(
+                (value, count / sample_space_size)
+                for value, count in sorted(counter.items())
+            ),
+        )
+        for feature, counter in counters.items()
+    )
+    return (
+        ("drawCount", draw_count),
+        ("sampleSpaceSize", sample_space_size),
+        ("baselineType", "exact_mathematical_enumeration"),
+        ("isPrediction", False),
+        *probability_items,
+    )
+
+
+def get_digit_theoretical_probabilities(rule: LotteryRule) -> dict[str, Any]:
+    """返回按玩法规则精确枚举的数学基线，并提供防御复制。"""
+
+    cached = _cached_digit_theoretical_probabilities(_rule_signature(rule))
+    return {
+        key: dict(value) if isinstance(value, tuple) else value for key, value in cached
+    }
+
+
+def digit_theoretical_probability_cache_info() -> Any:
+    """返回理论概率枚举缓存诊断信息。"""
+
+    return _cached_digit_theoretical_probabilities.cache_info()
 
 
 def digit_prime_composite_label(numbers: Sequence[int]) -> str:
@@ -365,12 +440,27 @@ def _smoothed_probabilities(
 ) -> dict[Any, float]:
     """对离散分布应用对称 Dirichlet 先验平滑。"""
 
+    return _smoothed_probabilities_from_counter(
+        Counter(values),
+        len(values),
+        domain,
+        prior_strength,
+    )
+
+
+def _smoothed_probabilities_from_counter(
+    counter: Mapping[Any, int],
+    sample_count: int,
+    domain: Sequence[Any],
+    prior_strength: float,
+) -> dict[Any, float]:
+    """直接基于频数与样本量应用对称 Dirichlet 先验平滑。"""
+
     normalized_domain = tuple(domain)
     if not normalized_domain:
         return {}
-    counter = Counter(values)
     prior_per_value = prior_strength / len(normalized_domain)
-    denominator = len(values) + prior_strength
+    denominator = int(sample_count) + prior_strength
     if denominator <= 0:
         uniform = 1.0 / len(normalized_domain)
         return {value: uniform for value in normalized_domain}
@@ -663,6 +753,7 @@ def analyze_digit_history(
         shape_distribution=shape_distribution,
         parity_distribution=parity_distribution,
         big_small_distribution=big_small_distribution,
+        theoretical_probabilities=get_digit_theoretical_probabilities(rule),
         latest_issue=latest_issue,
         latest_numbers=latest_numbers,
     )

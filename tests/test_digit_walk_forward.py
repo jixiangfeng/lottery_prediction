@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from src.analysis import digit_walk_forward
 from src.analysis.digit_candidates import DigitCandidateConfig
 from src.analysis.digit_walk_forward import (
     _select_nested_config,
@@ -357,6 +358,89 @@ def test_walk_forward_can_enable_monte_carlo_and_ml_voters_without_future_data()
     assert all(issue.train_end_issue < issue.issue for issue in ensemble.issues)
 
 
+def test_walk_forward_ml_training_history_strictly_precedes_each_target(monkeypatch):
+    rule = get_lottery_rule("fc3d")
+    original_builder = digit_walk_forward.build_advanced_model_scores
+    observed: list[tuple[int, int, bool, bool]] = []
+
+    def recording_builder(history, stats, target_rule, config, **kwargs):
+        target_issue = int(kwargs["seed"])
+        maximum_history_issue = int(history["期数"].astype(int).max())
+        external_scores, diagnostics = original_builder(
+            history, stats, target_rule, config, **kwargs
+        )
+        observed.append(
+            (
+                target_issue,
+                maximum_history_issue,
+                bool(external_scores.ml_ranker),
+                "mlRanker" in diagnostics.active_model_names,
+            )
+        )
+        return external_scores, diagnostics
+
+    monkeypatch.setattr(
+        digit_walk_forward, "build_advanced_model_scores", recording_builder
+    )
+    report = run_digit_walk_forward_backtest(
+        _history(70),
+        rule,
+        periods=2,
+        min_train_size=50,
+        candidate_count=5,
+        baseline_runs=1,
+        advanced_models=True,
+        monte_carlo_simulations=200,
+        ml_training_periods=8,
+        ml_negative_samples=2,
+    )
+    payload = report.to_dict()
+
+    assert len(observed) == 2
+    assert all(maximum < target for target, maximum, _, _ in observed)
+    assert all(ml_scores_non_empty for _, _, ml_scores_non_empty, _ in observed)
+    assert all(ml_active for _, _, _, ml_active in observed)
+    assert payload["modelActivationCounts"]["mlRanker"] == 2
+    assert payload["activeModelCount"] == 16
+    assert "mlRanker" in payload["activeModelNames"]
+    assert "实际启用模型（16/16）" in build_digit_walk_forward_markdown(report)
+
+
+def test_future_draw_change_does_not_affect_earlier_ml_candidates():
+    rule = get_lottery_rule("fc3d")
+    history = _history(70)
+    changed = history.copy()
+    changed.loc[changed["期数"] == "2026070", ["百位", "十位", "个位"]] = [9, 9, 9]
+    options = dict(
+        periods=2,
+        min_train_size=50,
+        candidate_count=5,
+        baseline_runs=1,
+        advanced_models=True,
+        monte_carlo_simulations=200,
+        ml_training_periods=8,
+        ml_negative_samples=2,
+    )
+
+    original_report = run_digit_walk_forward_backtest(history, rule, **options)
+    changed_report = run_digit_walk_forward_backtest(changed, rule, **options)
+    original_ensemble = next(
+        item
+        for item in original_report.strategy_summaries
+        if item.strategy == "ensemble_voting"
+    )
+    changed_ensemble = next(
+        item
+        for item in changed_report.strategy_summaries
+        if item.strategy == "ensemble_voting"
+    )
+
+    assert (
+        original_ensemble.issues[0].candidate_texts
+        == changed_ensemble.issues[0].candidate_texts
+    )
+
+
 def test_walk_forward_compares_requested_independent_windows():
     rule = get_lottery_rule("fc3d")
     report = run_digit_walk_forward_backtest(
@@ -378,3 +462,10 @@ def test_walk_forward_compares_requested_independent_windows():
     }
     assert all(item["targetPeriods"] == 2 for item in report.window_comparison)
     assert "独立窗口稳定性比较" in build_digit_walk_forward_markdown(report)
+
+
+def test_walk_forward_module_does_not_depend_on_latest_statistics_snapshot():
+    import src.analysis.digit_walk_forward as module
+
+    assert not hasattr(module, "analyze_digit_history_with_snapshot")
+    assert "digit_statistics_snapshot" not in module.__dict__

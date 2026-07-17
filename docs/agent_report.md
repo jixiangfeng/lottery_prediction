@@ -76,3 +76,31 @@
 - 权重调节：互信息与图嵌入权重应结合回测持续调整，可研发自动化调参脚本。
 - 图嵌入优化：可探索 Node2Vec 的 `p/q` 偏置、长游走及多嵌入投票。
 - 运维支持：在 `docs/ops.md` 中补充训练耗时、设备占用与缓存更新频率的监控指引。
+
+## 2026-07-16 数字彩增量统计快照
+
+### 需求摘要
+- 为福彩3D、排列三、排列五日报统计层实现首次全量、之后增量；理论数学基线与历史经验统计分层；逐期前推保持独立截止期计算。
+
+### 关键假设
+- 日报允许 O(n) 计算已处理前缀摘要验证历史修正，但 cache hit/追加路径不对完整历史重算统计。
+- 基础近期状态维护 10/30/50/100/300，动态全历史窗口从聚合计数生成。
+
+### 方案概览
+- `digit_statistics_snapshot.py` 保存版本、规则/稳定窗口签名、前缀摘要、全历史与窗口聚合、近期队列、遗漏和最新开奖，采用进程内 `RLock`、跨进程 `flock` 与原子替换。
+- `digit_statistics.py` 按规则签名缓存精确理论枚举；日报新增数学基线摘要和 `statisticsUpdate`。
+- 快照概率直接使用 Counter 与样本量计算 Dirichlet 平滑；日报 Markdown/JSON 使用临时文件、`fsync` 与 `os.replace` 原子落盘。
+- hindsight 全历史回放改为显式开关，默认使用开奖前 prediction snapshot 复盘。
+
+### 自测范围
+- 覆盖理论表与零合法组合、首次全量、cache hit、单期/多期追加、固定/全历史窗口碰撞、窗口淘汰、遗漏、转移、空历史 FC3D/PL5、历史修正/删减、损坏与配置失配、显式重建、Counter 不展开闸门、候选一致性、同/跨进程并发原子写及 walk-forward 快照隔离。
+- 最终复审新增确定性跨进程屏障：新进程先持有锁，旧进程读取 41 期文件身份后真实阻塞，新进程写完 42 期才释放；覆盖相同配置、不同固定窗口、不同先验和 `rebuild=True`，并增加窗口失配路径禁止调用 `_atomic_write_json` 的纯函数回归测试。
+
+### 验证结果
+- 聚焦测试：`.venv/bin/python -m pytest tests/test_digit_statistics_snapshot.py tests/test_digit_report.py -q` -> `45 passed`；其中快照模块 `30 passed`。
+- 完整测试：`make test RUN=.venv/bin/python` -> `253 passed, 2 warnings`；warning 为既有 sklearn PCA 小样本运行时告警。
+- 构建校验：`.venv/bin/python -m compileall -q src scripts` 通过；`git diff --check` 通过。
+- 本次 3 个 Python 文件使用 `isort --profile black`、Black、flake8 均通过；对 `digit_statistics_snapshot.py`、`digit_report.py` 使用 `mypy --follow-imports=skip` 检查无错误。常规导入追踪仅报告既有 `digit_candidates.py:507` 类型债务，本次未新增 mypy 错误。
+- `/tmp/fc3d_official_20260716.csv` 共 2255 期：冷启动 `full_rebuild/processedRows=2255/0.508615s`，热命中 `cache_hit/processedRows=0/0.052659s`，追加合法模拟期 `2026187,123` 后为 `incremental/processedRows=1/0.059558s`。
+- 对应全量分析耗时分别为 `0.236099s`、`0.235295s`、`0.233885s`。
+- 冷/热/追加结果均与同一完整 DataFrame 的 `analyze_digit_history(...)` 深度等价。模拟期仅写入系统临时目录 `fc3d_incremental_review_20260716_yxwrhte6/`，未进入正式报告或仓库数据。

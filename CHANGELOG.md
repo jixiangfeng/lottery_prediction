@@ -2,6 +2,10 @@
 All notable changes to this project will be documented in this file.
 ## [Unreleased] - 2026-07-16
 ### Added
+- 新增数字彩版本化 JSON 增量统计快照：首次全量、无新增命中、纯追加更新、前缀修正检测、原子保存和统计更新 metadata。
+- 新增按玩法规则签名缓存的精确理论概率枚举，覆盖形态、和值、跨度、奇偶比、大小比；三位彩精确为豹子 1%、组三 27%、组六 72%。
+- 数字彩日报/CLI 新增 `--stats-snapshot-path`、`--rebuild-stats`、`--no-incremental-stats`、`--hindsight-backtest`。
+- 新增 `src`/`scripts` 全量内存语法编译测试闸门、日报/前推 active/available 模型证据，以及逐目标期 ML 真训练历史边界回归测试。
 - 新增 16 个子模型各自 Top 候选留痕、开奖后逐模型复盘、严格前推模型表现与有样本门槛的保守自动调权。
 - 新增多窗口遗漏、可配置奇偶/大小/质合软硬约束、组三/组六形态内独立集成排名。
 - 蒙特卡洛升级为多窗口边际分布、位置对条件分布和形态接受率的联合模拟。
@@ -15,6 +19,11 @@ All notable changes to this project will be documented in this file.
 - 严格前推新增多随机基线分布、当前策略百分位、候选复合模型分/目标排名和可选嵌套调参证据。
 
 ### Changed
+- 数字彩日报默认使用 `output_dir/state/{code}_statistics_snapshot.json` 增量统计；动态全历史窗口从聚合计数重建，近期队列默认最多保留 300 期。
+- 默认关闭“把当前候选回放全部历史”的 hindsight 回放，优先使用开奖前推荐快照实盘复盘；旧 JSON `backtest` 结构继续兼容。
+- 日报 Markdown/JSON 分层展示理论数学基线与历史经验统计，并新增 `statisticsUpdate`、`theoreticalProbabilities`、`hindsightBacktest` 字段。
+- 排列五完整空间改用 NumPy 静态特征与紧凑评分池，复用同一期复合/集成计算并按需构造候选对象；候选文本、排序、形态配额、分数语义和 JSON 公共字段保持兼容。
+- 外部模型分数改为防御性复制的只读映射，评分池缓存收紧为最近 2 项；inactive 蒙特卡洛/ML 槽位明确为中性 `0.5` 兼容占位。
 - 数字彩日报默认使用 `ensemble` 排序；严格前推同时比较旧复合策略、`ensemble_voting` 和 `uniform_random`。
 - `src` 包入口不再无条件加载旧 PyTorch 训练模块，轻量统计链路可在不安装深度学习依赖时独立导入。
 - 数字彩候选从随机抽样升级为三位 1000 种、五位 100000 种全空间确定性评分与高分池多样性选择。
@@ -23,6 +32,13 @@ All notable changes to this project will be documented in this file.
 - 排列三与排列五前三位使用同一共享评分函数，旧日报 JSON 字段保持兼容并新增 `directCandidates`/`groupCandidates`。
 
 ### Fixed
+- 修复动态全历史总期数碰撞固定窗口时的快照配置误判，窗口签名改为固定窗口加 `allHistory` sentinel，并保持旧调用兼容。
+- 修复快照概率重建按次数展开 Counter 导致的 O(N) 临时内存；新增跨进程 `flock` 事务锁、并发陈旧视图保护、空历史等价性和日报 Markdown/JSON 原子写。
+- 修复最终复审发现的陈旧短视图覆盖：窗口/先验/schema/engine 不兼容或显式重建也统一进入 `stale_view` 非持久化路径，新增 `persisted`、`snapshotWritten` 与 `requestedRebuildReason` 元数据。
+- 理论枚举在规则无合法组合时明确抛出 `ValueError`，不再返回空概率表。
+- 快照遇到损坏、版本/规则/窗口/先验不匹配、历史删减、前缀号码修正或非追加期号时自动全量重建，避免静默使用陈旧统计。
+- 严格逐期前推保持独立历史截止期计算，不读取日报最新统计快照，避免未来数据泄漏。
+- 修复 `src/analysis/kl8_analysis_plus.py` 模块级无效 `global rule_filter` 导致的 compileall 语法错误，并让 `make build` 同时检查 `src` 与 `scripts`。
 - 严格前推训练集截止到目标期前一期，避免固定候选历史回放中的未来数据泄漏。
 - 统一统计直选、随机直选、统计组选、随机组选的严格形态预算，并保证组选返回数量等于请求数量。
 - 嵌套调参统一使用最终直选/组选候选判定命中，跨配置比较仅使用命中数与过滤空间归一化排名分位。

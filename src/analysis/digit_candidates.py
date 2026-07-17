@@ -7,14 +7,18 @@
 
 from __future__ import annotations
 
-import itertools
 import heapq
+import itertools
 import math
 import random
+from collections.abc import Mapping
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
+from types import MappingProxyType
 from typing import Any, Sequence
+
+import numpy as np
 
 from src.analysis.digit_statistics import (
     DigitStatisticsResult,
@@ -150,8 +154,14 @@ class DigitCandidateConfig:
 class DigitExternalModelScores:
     """蒙特卡洛和机器学习模型对完整候选空间的外部分数。"""
 
-    monte_carlo: dict[str, float]
-    ml_ranker: dict[str, float]
+    monte_carlo: Mapping[str, float]
+    ml_ranker: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "monte_carlo", MappingProxyType(dict(self.monte_carlo))
+        )
+        object.__setattr__(self, "ml_ranker", MappingProxyType(dict(self.ml_ranker)))
 
     def values_for(self, text: str) -> tuple[float, float]:
         return (
@@ -912,6 +922,100 @@ def _digit_universe(
     return tuple(rows)
 
 
+_SHAPE_LABELS = {
+    3: ("豹子", "组三", "组六"),
+    5: ("五同", "四一", "三二", "三一一", "二二一", "二一一一", "全不同"),
+}
+
+
+@dataclass(frozen=True)
+class _DigitUniverseArrays:
+    """数字彩完整静态空间的紧凑 NumPy 特征。"""
+
+    numbers: np.ndarray
+    sums: np.ndarray
+    spans: np.ndarray
+    shape_codes: np.ndarray
+    prefix_sums: np.ndarray
+    prefix_spans: np.ndarray
+    prefix_shape_codes: np.ndarray
+    odd_counts: np.ndarray
+    big_counts: np.ndarray
+    prime_counts: np.ndarray
+    composite_counts: np.ndarray
+    consecutive_counts: np.ndarray
+    mirror_counts: np.ndarray
+
+
+@lru_cache(maxsize=2)
+def _digit_universe_arrays(draw_count: int) -> _DigitUniverseArrays:
+    """构建并缓存 3 位/5 位完整号码空间及静态特征。"""
+
+    size = 10**draw_count
+    indexes = np.arange(size, dtype=np.int32)
+    divisors = 10 ** np.arange(draw_count - 1, -1, -1, dtype=np.int32)
+    numbers = ((indexes[:, None] // divisors) % 10).astype(np.uint8)
+    sums = numbers.sum(axis=1, dtype=np.uint8)
+    spans = (numbers.max(axis=1) - numbers.min(axis=1)).astype(np.uint8)
+    digit_counts = (numbers[:, :, None] == np.arange(10, dtype=np.uint8)).sum(
+        axis=1, dtype=np.uint8
+    )
+
+    def shape_codes(values: np.ndarray, count: int) -> np.ndarray:
+        counts = np.sort(values, axis=1)[:, ::-1]
+        if count == 3:
+            return np.select(
+                (counts[:, 0] == 3, counts[:, 0] == 2),
+                (0, 1),
+                default=2,
+            ).astype(np.uint8)
+        return np.select(
+            (
+                counts[:, 0] == 5,
+                counts[:, 0] == 4,
+                (counts[:, 0] == 3) & (counts[:, 1] == 2),
+                counts[:, 0] == 3,
+                (counts[:, 0] == 2) & (counts[:, 1] == 2),
+                counts[:, 0] == 2,
+            ),
+            (0, 1, 2, 3, 4, 5),
+            default=6,
+        ).astype(np.uint8)
+
+    prefix_numbers = numbers[:, :3]
+    prefix_counts = (
+        digit_counts
+        if draw_count == 3
+        else (prefix_numbers[:, :, None] == np.arange(10, dtype=np.uint8)).sum(
+            axis=1, dtype=np.uint8
+        )
+    )
+    present = digit_counts > 0
+    mirror_counts = np.zeros(size, dtype=np.uint8)
+    for left in range(draw_count):
+        for right in range(left + 1, draw_count):
+            mirror_counts += numbers[:, left] + numbers[:, right] == 9
+    return _DigitUniverseArrays(
+        numbers=numbers,
+        sums=sums,
+        spans=spans,
+        shape_codes=shape_codes(digit_counts, draw_count),
+        prefix_sums=prefix_numbers.sum(axis=1, dtype=np.uint8),
+        prefix_spans=(prefix_numbers.max(axis=1) - prefix_numbers.min(axis=1)).astype(
+            np.uint8
+        ),
+        prefix_shape_codes=shape_codes(prefix_counts, 3),
+        odd_counts=(numbers % 2).sum(axis=1, dtype=np.uint8),
+        big_counts=(numbers >= 5).sum(axis=1, dtype=np.uint8),
+        prime_counts=np.isin(numbers, (2, 3, 5, 7)).sum(axis=1, dtype=np.uint8),
+        composite_counts=np.isin(numbers, (4, 6, 8, 9)).sum(axis=1, dtype=np.uint8),
+        consecutive_counts=(present[:, :-1] & present[:, 1:]).sum(
+            axis=1, dtype=np.uint8
+        ),
+        mirror_counts=mirror_counts,
+    )
+
+
 def _passes_cached_filters(
     sum_value: int, span: int, shape: str, config: DigitCandidateConfig
 ) -> bool:
@@ -1055,6 +1159,353 @@ def _diversity_select(
     return output
 
 
+def _lookup_by_integer(values: dict[Any, float], maximum: int) -> np.ndarray:
+    return np.asarray([values[index] for index in range(maximum + 1)], dtype=float)
+
+
+def _lookup_shape(values: dict[str, float], draw_count: int) -> np.ndarray:
+    return np.asarray(
+        [values[label] for label in _SHAPE_LABELS[draw_count]], dtype=float
+    )
+
+
+def _lookup_structural_labels(
+    context: dict[str, Any], draw_count: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    parity = np.asarray(
+        [
+            context["parity"][f"奇{odd}偶{draw_count - odd}"]
+            for odd in range(draw_count + 1)
+        ],
+        dtype=float,
+    )
+    big_small = np.asarray(
+        [
+            context["bigSmall"][f"大{big}小{draw_count - big}"]
+            for big in range(draw_count + 1)
+        ],
+        dtype=float,
+    )
+    prime_composite = np.empty((draw_count + 1, draw_count + 1), dtype=float)
+    prime_composite.fill(-math.inf)
+    for prime in range(draw_count + 1):
+        for composite in range(draw_count - prime + 1):
+            other = draw_count - prime - composite
+            prime_composite[prime, composite] = context["primeComposite"][
+                f"质{prime}合{composite}其他{other}"
+            ]
+    return parity, big_small, prime_composite
+
+
+def _numpy_rank_percentiles(values: np.ndarray) -> np.ndarray:
+    """NumPy 版并列中位排名分位，语义与 ``_rank_percentiles`` 一致。"""
+
+    size = len(values)
+    if size == 0:
+        return np.empty(0, dtype=float)
+    if size == 1:
+        return np.ones(1, dtype=float)
+    order = np.argsort(values, kind="stable")
+    ordered = values[order]
+    boundaries = np.flatnonzero(np.r_[True, np.abs(np.diff(ordered)) > 1e-12, True])
+    output = np.empty(size, dtype=float)
+    denominator = size - 1
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        output[order[start:end]] = ((start + end - 1) / 2) / denominator
+    return output
+
+
+@dataclass(frozen=True)
+class _ScoredCandidatePool:
+    """按最终排序保存完整过滤空间，候选对象按需物化。"""
+
+    draw_count: int
+    universe_indexes: np.ndarray
+    scores: np.ndarray
+    composite_weights: np.ndarray
+    ensemble_scores: np.ndarray
+    model_percentiles: np.ndarray
+    constraint_penalties: np.ndarray
+
+    def __len__(self) -> int:
+        return len(self.universe_indexes)
+
+    def _shape(self, rank_index: int) -> str:
+        universe = _digit_universe_arrays(self.draw_count)
+        code = int(universe.shape_codes[self.universe_indexes[rank_index]])
+        return _SHAPE_LABELS[self.draw_count][code]
+
+    def text_at(self, rank_index: int) -> str:
+        return f"{int(self.universe_indexes[rank_index]):0{self.draw_count}d}"
+
+    def candidate_at(self, rank_index: int) -> DigitCandidate:
+        universe = _digit_universe_arrays(self.draw_count)
+        universe_index = int(self.universe_indexes[rank_index])
+        numbers = universe.numbers[universe_index].astype(int).tolist()
+        return DigitCandidate(
+            numbers=numbers,
+            text=f"{universe_index:0{self.draw_count}d}",
+            sum_value=int(universe.sums[universe_index]),
+            span=int(universe.spans[universe_index]),
+            shape=_SHAPE_LABELS[self.draw_count][
+                int(universe.shape_codes[universe_index])
+            ],
+            score=float(self.scores[rank_index]),
+            joint_probability=float(self.composite_weights[rank_index]),
+            ensemble_score=float(self.ensemble_scores[rank_index]),
+            model_rank_percentiles=(
+                tuple(float(value) for value in self.model_percentiles[rank_index])
+                if self.model_percentiles.size
+                else ()
+            ),
+            constraint_penalty=float(self.constraint_penalties[rank_index]),
+        )
+
+    def candidates_at(self, rank_indexes: Sequence[int]) -> list[DigitCandidate]:
+        return [self.candidate_at(int(index)) for index in rank_indexes]
+
+    def defensive_mask(self, rule: LotteryRule) -> np.ndarray:
+        universe = _digit_universe_arrays(self.draw_count)
+        codes = universe.shape_codes[self.universe_indexes]
+        if rule.draw_count == 3:
+            return codes == _SHAPE_LABELS[3].index("组三")
+        return np.isin(
+            codes,
+            (
+                _SHAPE_LABELS[5].index("三一一"),
+                _SHAPE_LABELS[5].index("三二"),
+            ),
+        )
+
+    def rank_for_text(self, text: str) -> int | None:
+        target = int(text)
+        matches = np.flatnonzero(self.universe_indexes == target)
+        return int(matches[0]) if matches.size else None
+
+
+def _score_candidate_space(
+    stats: DigitStatisticsResult,
+    rule: LotteryRule,
+    config: DigitCandidateConfig,
+    latest_text_for_exclusion: str | None,
+    external_scores: DigitExternalModelScores | None = None,
+) -> _ScoredCandidatePool:
+    """用 NumPy 一次计算完整过滤空间的复合分与集成分位。"""
+
+    universe = _digit_universe_arrays(rule.draw_count)
+    context = _build_score_context(stats, config)
+    mask = np.ones(len(universe.numbers), dtype=bool)
+    if config.sum_min is not None:
+        mask &= universe.sums >= config.sum_min
+    if config.sum_max is not None:
+        mask &= universe.sums <= config.sum_max
+    if config.span_min is not None:
+        mask &= universe.spans >= config.span_min
+    if config.span_max is not None:
+        mask &= universe.spans <= config.span_max
+    if config.allowed_shapes is not None:
+        allowed_codes = [
+            _SHAPE_LABELS[rule.draw_count].index(shape)
+            for shape in config.allowed_shapes
+            if shape in _SHAPE_LABELS[rule.draw_count]
+        ]
+        mask &= np.isin(universe.shape_codes, allowed_codes)
+    if config.exclude_latest and latest_text_for_exclusion is not None:
+        mask[int(latest_text_for_exclusion)] = False
+
+    indexes = np.flatnonzero(mask)
+    if indexes.size == 0:
+        return _ScoredCandidatePool(
+            draw_count=rule.draw_count,
+            universe_indexes=np.empty(0, dtype=np.int32),
+            scores=np.empty(0, dtype=float),
+            composite_weights=np.empty(0, dtype=float),
+            ensemble_scores=np.empty(0, dtype=float),
+            model_percentiles=np.empty((0, 0), dtype=float),
+            constraint_penalties=np.empty(0, dtype=float),
+        )
+    numbers = universe.numbers[indexes]
+    parity_lookup, big_lookup, prime_lookup = _lookup_structural_labels(
+        context, rule.draw_count
+    )
+    parity_values = parity_lookup[universe.odd_counts[indexes]]
+    big_values = big_lookup[universe.big_counts[indexes]]
+    prime_values = prime_lookup[
+        universe.prime_counts[indexes], universe.composite_counts[indexes]
+    ]
+    penalties = np.zeros(len(indexes), dtype=float)
+    if config.constraint_mode != "off" and config.constraint_probability_floor > 0:
+        threshold = math.log(max(config.constraint_probability_floor, 1e-300))
+        deficits = np.maximum(
+            0.0,
+            threshold - np.column_stack((parity_values, big_values, prime_values)),
+        )
+        if config.constraint_mode == "hard":
+            keep = ~np.any(deficits > 0, axis=1)
+            indexes = indexes[keep]
+            numbers = numbers[keep]
+            parity_values = parity_values[keep]
+            big_values = big_values[keep]
+            prime_values = prime_values[keep]
+            deficits = deficits[keep]
+            if indexes.size == 0:
+                return _ScoredCandidatePool(
+                    draw_count=rule.draw_count,
+                    universe_indexes=np.empty(0, dtype=np.int32),
+                    scores=np.empty(0, dtype=float),
+                    composite_weights=np.empty(0, dtype=float),
+                    ensemble_scores=np.empty(0, dtype=float),
+                    model_percentiles=np.empty((0, 0), dtype=float),
+                    constraint_penalties=np.empty(0, dtype=float),
+                )
+        penalties = config.constraint_penalty_weight * deficits.sum(axis=1)
+
+    positions = context["positions"]
+    marginal_tables = np.asarray(
+        [
+            [context["marginal"][position][digit] for digit in range(10)]
+            for position in positions
+        ]
+    )
+    omission_tables = np.asarray(
+        [
+            [
+                context["omission"].get(position, {}).get(digit, 0.0)
+                for digit in range(10)
+            ]
+            for position in positions
+        ]
+    )
+    marginal_values = marginal_tables[np.arange(rule.draw_count)[:, None], numbers.T]
+    omission_values = omission_tables[np.arange(rule.draw_count)[:, None], numbers.T]
+
+    pair_values: dict[tuple[int, int], np.ndarray] = {}
+    for left in range(rule.draw_count):
+        for right in range(left + 1, rule.draw_count):
+            table = np.asarray(
+                [
+                    [context["pair"][f"{left}-{right}"][(a, b)] for b in range(10)]
+                    for a in range(10)
+                ]
+            )
+            pair_values[(left, right)] = table[numbers[:, left], numbers[:, right]]
+
+    prefix_pair = sum(pair_values[pair] for pair in ((0, 1), (0, 2), (1, 2))) / 3
+    prefix_score = config.marginal_weight * marginal_values[:3].mean(axis=0)
+    prefix_score += config.pair_weight * prefix_pair
+    prefix_score += (
+        config.shape_weight
+        * _lookup_shape(context["prefixShape"], 3)[universe.prefix_shape_codes[indexes]]
+    )
+    prefix_score += (
+        config.sum_weight
+        * _lookup_by_integer(context["prefixSum"], 27)[universe.prefix_sums[indexes]]
+    )
+    prefix_score += (
+        config.span_weight
+        * _lookup_by_integer(context["prefixSpan"], 9)[universe.prefix_spans[indexes]]
+    )
+    prefix_score += config.omission_weight * omission_values[:3].mean(axis=0)
+    scores = prefix_score
+    if rule.draw_count == 5:
+        suffix_pairs = [value for pair, value in pair_values.items() if pair[1] >= 3]
+        scores = scores + config.marginal_weight * marginal_values[3:].mean(axis=0)
+        scores += config.pair_weight * np.mean(suffix_pairs, axis=0)
+        scores += (
+            config.shape_weight
+            * _lookup_shape(context["shape"], 5)[universe.shape_codes[indexes]]
+        )
+        scores += (
+            config.sum_weight
+            * _lookup_by_integer(context["sum"], 45)[universe.sums[indexes]]
+        )
+        scores += (
+            config.span_weight
+            * _lookup_by_integer(context["span"], 9)[universe.spans[indexes]]
+        )
+        scores += config.omission_weight * omission_values[3:].mean(axis=0)
+    scores = scores - penalties
+
+    maximum = float(scores.max())
+    weights = np.exp(scores - maximum)
+    weights /= weights.sum()
+    rounded_scores = np.round(scores, 6)
+    rounded_penalties = np.round(penalties, 6)
+    percentiles = np.empty((len(indexes), 0), dtype=float)
+    ensemble_scores = np.zeros(len(indexes), dtype=float)
+    if config.ranking_mode == "ensemble":
+        latest = np.asarray(context["latestNumbers"], dtype=np.int16)
+        components = [
+            marginal_values.mean(axis=0),
+            np.mean(list(pair_values.values()), axis=0),
+            _lookup_shape(
+                context["shape" if rule.draw_count == 5 else "prefixShape"],
+                rule.draw_count,
+            )[universe.shape_codes[indexes]],
+            _lookup_by_integer(
+                context["sum" if rule.draw_count == 5 else "prefixSum"],
+                45 if rule.draw_count == 5 else 27,
+            )[universe.sums[indexes]],
+            _lookup_by_integer(
+                context["span" if rule.draw_count == 5 else "prefixSpan"], 9
+            )[universe.spans[indexes]],
+            parity_values,
+            big_values,
+            prime_values,
+            _lookup_by_integer(context["consecutive"], rule.draw_count - 1)[
+                universe.consecutive_counts[indexes]
+            ],
+            _lookup_by_integer(
+                context["mirror"], rule.draw_count * (rule.draw_count - 1) // 2
+            )[universe.mirror_counts[indexes]],
+            _lookup_by_integer(context["sumTail"], 9)[universe.sums[indexes] % 10],
+            _lookup_by_integer(context["latestDistance"], 9 * rule.draw_count)[
+                np.abs(numbers.astype(np.int16) - latest).sum(axis=1)
+            ],
+            _lookup_by_integer(context["repeatLatest"], rule.draw_count)[
+                (numbers == latest).sum(axis=1)
+            ],
+            omission_values.mean(axis=0),
+        ]
+        for scores_by_text in (
+            external_scores.monte_carlo if external_scores is not None else {},
+            external_scores.ml_ranker if external_scores is not None else {},
+        ):
+            external = np.zeros(len(indexes), dtype=float)
+            for text, value in scores_by_text.items():
+                position = np.searchsorted(indexes, int(text))
+                if position < len(indexes) and indexes[position] == int(text):
+                    external[position] = float(value)
+            components.append(external)
+        percentiles = np.column_stack(
+            [_numpy_rank_percentiles(component) for component in components]
+        )
+        ensemble_scores = np.round(
+            np.maximum(
+                0.0,
+                percentiles
+                @ np.asarray(config.ensemble_model_weights, dtype=float)
+                / sum(config.ensemble_model_weights)
+                - penalties,
+            ),
+            6,
+        )
+
+    selection_scores = (
+        ensemble_scores if config.ranking_mode == "ensemble" else rounded_scores
+    )
+    order = np.lexsort((indexes, -rounded_scores, -selection_scores))
+    return _ScoredCandidatePool(
+        draw_count=rule.draw_count,
+        universe_indexes=indexes[order].astype(np.int32, copy=False),
+        scores=rounded_scores[order],
+        composite_weights=weights[order],
+        ensemble_scores=ensemble_scores[order],
+        model_percentiles=percentiles[order] if percentiles.size else percentiles,
+        constraint_penalties=rounded_penalties[order],
+    )
+
+
 def _enumerate_scored_candidates(
     stats: DigitStatisticsResult,
     rule: LotteryRule,
@@ -1062,114 +1513,19 @@ def _enumerate_scored_candidates(
     latest_text_for_exclusion: str | None,
     external_scores: DigitExternalModelScores | None = None,
 ) -> list[DigitCandidate]:
-    """枚举过滤空间并按启发式复合模型分排序。"""
+    """兼容测试/扩展调用：按需评分后物化完整候选列表。"""
 
-    rows: list[
-        tuple[list[int], str, int, int, str, float, tuple[float, ...], float]
-    ] = []
-    context = _build_score_context(stats, config)
-    for values, text, sum_value, span, shape in _digit_universe(rule.draw_count):
-        numbers = list(values)
-        if not _passes_cached_filters(sum_value, span, shape, config):
-            continue
-        if config.exclude_latest and text == latest_text_for_exclusion:
-            continue
-        constraint_penalty = _structure_constraint_penalty(numbers, context, config)
-        if math.isinf(constraint_penalty):
-            continue
-        score = (
-            _score_numbers_with_context(numbers, config, context) - constraint_penalty
-        )
-        components = ()
-        if config.ranking_mode == "ensemble":
-            components = _model_component_scores(numbers, context)
-            if external_scores is not None:
-                components = (*components[:-2], *external_scores.values_for(text))
-        rows.append(
-            (
-                numbers,
-                text,
-                sum_value,
-                span,
-                shape,
-                score,
-                components,
-                constraint_penalty,
-            )
-        )
-    if not rows:
-        return []
-    maximum = max(row[5] for row in rows)
-    total_weight = sum(math.exp(row[5] - maximum) for row in rows)
-    model_percentiles: list[list[float]] = []
-    if config.ranking_mode == "ensemble":
-        model_percentiles = [
-            _rank_percentiles([row[6][model_index] for row in rows])
-            for model_index in range(len(ENSEMBLE_MODEL_NAMES))
-        ]
-    ensemble_weight_total = sum(config.ensemble_model_weights)
-    candidates = [
-        DigitCandidate(
-            numbers,
-            text,
-            sum_value,
-            span,
-            shape,
-            round(score, 6),
-            math.exp(score - maximum) / total_weight if total_weight else 0.0,
-            (
-                round(
-                    max(
-                        0.0,
-                        sum(
-                            weight * model_percentiles[model_index][row_index]
-                            for model_index, weight in enumerate(
-                                config.ensemble_model_weights
-                            )
-                        )
-                        / ensemble_weight_total
-                        - constraint_penalty,
-                    ),
-                    6,
-                )
-                if model_percentiles
-                else 0.0
-            ),
-            (
-                tuple(
-                    model_percentiles[model_index][row_index]
-                    for model_index in range(len(model_percentiles))
-                )
-                if model_percentiles
-                else ()
-            ),
-            round(constraint_penalty, 6),
-        )
-        for row_index, (
-            numbers,
-            text,
-            sum_value,
-            span,
-            shape,
-            score,
-            _,
-            constraint_penalty,
-        ) in enumerate(rows)
-    ]
-    return sorted(
-        candidates,
-        key=lambda candidate: (
-            -_selection_score(candidate, config),
-            -candidate.score,
-            candidate.text,
-        ),
+    pool = _score_candidate_space(
+        stats, rule, config, latest_text_for_exclusion, external_scores
     )
+    return pool.candidates_at(range(len(pool)))
 
 
 _SCORED_POOL_CACHE: OrderedDict[
-    tuple[int, str, DigitCandidateConfig],
-    tuple[DigitStatisticsResult, list[DigitCandidate]],
+    tuple[int, str, DigitCandidateConfig, int | None],
+    tuple[DigitStatisticsResult, DigitExternalModelScores | None, _ScoredCandidatePool],
 ] = OrderedDict()
+_SCORED_POOL_CACHE_MAXSIZE = 2
 
 
 def _scored_candidate_pool(
@@ -1177,34 +1533,24 @@ def _scored_candidate_pool(
     rule: LotteryRule,
     config: DigitCandidateConfig,
     external_scores: DigitExternalModelScores | None = None,
-) -> list[DigitCandidate]:
-    """缓存同一期统计、同一配置的完整评分池，供多随机基线复用。"""
+) -> _ScoredCandidatePool:
+    """返回有界隔离缓存的完整评分池，供同一期生成、排名和基线复用。"""
 
-    if external_scores is not None:
-        latest_text = (
-            _candidate_text(stats.latest_numbers) if stats.latest_numbers else None
-        )
-        return _enumerate_scored_candidates(
-            stats,
-            rule,
-            config,
-            latest_text,
-            external_scores,
-        )
-    key = (id(stats), rule.code, config)
+    external_id = id(external_scores) if external_scores is not None else None
+    key = (id(stats), rule.code, config, external_id)
     cached = _SCORED_POOL_CACHE.get(key)
-    if cached is not None and cached[0] is stats:
+    if cached is not None and cached[0] is stats and cached[1] is external_scores:
         _SCORED_POOL_CACHE.move_to_end(key)
-        return cached[1]
+        return cached[2]
     latest_text = (
         _candidate_text(stats.latest_numbers) if stats.latest_numbers else None
     )
-    ranked = _enumerate_scored_candidates(stats, rule, config, latest_text)
-    _SCORED_POOL_CACHE[key] = (stats, ranked)
+    pool = _score_candidate_space(stats, rule, config, latest_text, external_scores)
+    _SCORED_POOL_CACHE[key] = (stats, external_scores, pool)
     _SCORED_POOL_CACHE.move_to_end(key)
-    while len(_SCORED_POOL_CACHE) > 8:
+    while len(_SCORED_POOL_CACHE) > _SCORED_POOL_CACHE_MAXSIZE:
         _SCORED_POOL_CACHE.popitem(last=False)
-    return ranked
+    return pool
 
 
 def _order_three_digit_candidates_by_shape_probability(
@@ -1269,7 +1615,7 @@ def _order_pl5_candidates_by_shape_probability(
 
 
 def _build_model_candidate_lists(
-    ranked: Sequence[DigitCandidate],
+    ranked: Sequence[DigitCandidate] | _ScoredCandidatePool,
     rule: LotteryRule,
     config: DigitCandidateConfig,
     external_scores: DigitExternalModelScores | None,
@@ -1278,8 +1624,34 @@ def _build_model_candidate_lists(
 
     if config.ranking_mode != "ensemble" or not ranked:
         return {}
+    if isinstance(ranked, _ScoredCandidatePool):
+        budget = _shape_budget(rule, config, config.count)
+        defensive_mask = ranked.defensive_mask(rule)
+        output: dict[str, list[str]] = {}
+        for model_index, model_name in enumerate(ENSEMBLE_MODEL_NAMES):
+            if model_name == "monteCarlo" and not (
+                external_scores is not None and external_scores.monte_carlo
+            ):
+                continue
+            if model_name == "mlRanker" and not (
+                external_scores is not None and external_scores.ml_ranker
+            ):
+                continue
+            order = np.lexsort(
+                (
+                    ranked.universe_indexes,
+                    -ranked.scores,
+                    -ranked.model_percentiles[:, model_index],
+                )
+            )
+            mainstream = order[~defensive_mask[order]][: budget["mainstream"]]
+            defensive = order[defensive_mask[order]][: budget["defensive"]]
+            output[model_name] = [
+                ranked.text_at(int(index)) for index in np.r_[mainstream, defensive]
+            ]
+        return output
     budget = _shape_budget(rule, config, config.count)
-    output: dict[str, list[str]] = {}
+    candidate_output: dict[str, list[str]] = {}
     for model_index, model_name in enumerate(ENSEMBLE_MODEL_NAMES):
         if model_name == "monteCarlo" and not (
             external_scores is not None and external_scores.monte_carlo
@@ -1316,8 +1688,8 @@ def _build_model_candidate_lists(
             key=ranking_key,
         )
         selected = [*mainstream, *defensive]
-        output[model_name] = [candidate.text for candidate in selected]
-    return output
+        candidate_output[model_name] = [candidate.text for candidate in selected]
+    return candidate_output
 
 
 def generate_digit_candidates(
@@ -1343,14 +1715,39 @@ def generate_digit_candidates(
         ranked, rule, config, external_scores
     )
     budget = _shape_budget(rule, config, config.count)
-    mainstream = [
-        candidate
-        for candidate in ranked
-        if not _is_defensive_shape(rule, candidate.shape)
-    ]
-    defensive = [
-        candidate for candidate in ranked if _is_defensive_shape(rule, candidate.shape)
-    ]
+    defensive_mask = ranked.defensive_mask(rule)
+    pool_size = max(200, config.count * max(1, config.high_score_pool_factor))
+
+    def quality_indexes(indexes: np.ndarray, count: int) -> np.ndarray:
+        if count <= 0 or indexes.size == 0:
+            return np.empty(0, dtype=np.int64)
+        selection_scores = (
+            ranked.ensemble_scores
+            if config.ranking_mode == "ensemble"
+            else ranked.scores
+        )
+        group_scores = selection_scores[indexes]
+        score_only_floor = group_scores[min(count, len(group_scores)) - 1]
+        configured_floor = group_scores[0] - (
+            config.ensemble_score_floor
+            if config.ranking_mode == "ensemble"
+            else config.score_floor
+        )
+        quality = indexes[group_scores >= configured_floor - 1e-12]
+        if len(quality) < count:
+            quality = indexes[:count]
+        else:
+            quality = quality[selection_scores[quality] >= score_only_floor - 1e-12]
+        return quality[:pool_size]
+
+    mainstream_indexes = quality_indexes(
+        np.flatnonzero(~defensive_mask), budget["mainstream"]
+    )
+    defensive_indexes = quality_indexes(
+        np.flatnonzero(defensive_mask), budget["defensive"]
+    )
+    mainstream = ranked.candidates_at([int(index) for index in mainstream_indexes])
+    defensive = ranked.candidates_at([int(index) for index in defensive_indexes])
     selected_mainstream = _diversity_select(mainstream, budget["mainstream"], config)
     selected_defensive = _diversity_select(
         defensive,
@@ -1423,7 +1820,8 @@ def generate_digit_betting_candidates(
             direct.model_candidates,
         )
 
-    ordered = _scored_candidate_pool(stats, rule, direct.config, external_scores)
+    pool = _scored_candidate_pool(stats, rule, direct.config, external_scores)
+    ordered = pool.candidates_at(range(len(pool)))
     ordered = [
         candidate for candidate in ordered if candidate.shape in {"组六", "组三"}
     ]
@@ -1570,7 +1968,6 @@ def rank_digit_numbers_with_eligible_count(
 
     effective = _effective_config(rule, config or DigitCandidateConfig())
     target_numbers = [int(number) for number in numbers]
-    target_score = score_digit_numbers(stats, target_numbers, effective)
     target_text = _candidate_text(target_numbers)
     latest_text = (
         _candidate_text(stats.latest_numbers) if stats.latest_numbers else None
@@ -1581,9 +1978,15 @@ def rank_digit_numbers_with_eligible_count(
     ranked = _scored_candidate_pool(stats, rule, effective, external_scores)
     eligible = len(ranked)
     if target_in_space:
-        for rank, candidate in enumerate(ranked, 1):
-            if candidate.text == target_text:
-                return rank, _selection_score(candidate, effective), eligible
+        rank_index = ranked.rank_for_text(target_text)
+        if rank_index is not None:
+            selection_score = (
+                ranked.ensemble_scores[rank_index]
+                if effective.ranking_mode == "ensemble"
+                else ranked.scores[rank_index]
+            )
+            return rank_index + 1, float(selection_score), eligible
+    target_score = score_digit_numbers(stats, target_numbers, effective)
     return eligible + 1, target_score, eligible
 
 
@@ -1607,28 +2010,24 @@ def generate_uniform_digit_candidates(
         )
     if rule.draw_count in {3, 5}:
         budget = _shape_budget(rule, config, config.count)
-        defensive = [
-            candidate
-            for candidate in universe
-            if _is_defensive_shape(rule, candidate.shape)
-        ]
-        mainstream = [
-            candidate
-            for candidate in universe
-            if not _is_defensive_shape(rule, candidate.shape)
-        ]
+        defensive_mask = universe.defensive_mask(rule)
+        defensive_indexes = np.flatnonzero(defensive_mask).tolist()
+        mainstream_indexes = np.flatnonzero(~defensive_mask).tolist()
         if (
-            len(mainstream) < budget["mainstream"]
-            or len(defensive) < budget["defensive"]
+            len(mainstream_indexes) < budget["mainstream"]
+            or len(defensive_indexes) < budget["defensive"]
         ):
             raise ValueError(
                 f"候选不足：请求 {config.count} 注，过滤后无法满足形态预算"
             )
-        candidates = rng.sample(mainstream, budget["mainstream"]) + rng.sample(
-            defensive, budget["defensive"]
-        )
+        selected_indexes = rng.sample(
+            mainstream_indexes, budget["mainstream"]
+        ) + rng.sample(defensive_indexes, budget["defensive"])
+        candidates = universe.candidates_at(selected_indexes)
     else:
-        candidates = rng.sample(universe, config.count)
+        candidates = universe.candidates_at(
+            rng.sample(range(len(universe)), config.count)
+        )
     if rule.draw_count == 3:
         candidates = _order_three_digit_candidates_by_shape_probability(
             candidates, config
@@ -1672,7 +2071,8 @@ def generate_uniform_digit_betting_candidates(
 
     permutation_counts: Counter[str] = Counter()
     group_shapes: dict[str, str] = {}
-    for candidate in _scored_candidate_pool(stats, rule, direct.config):
+    pool = _scored_candidate_pool(stats, rule, direct.config)
+    for candidate in pool.candidates_at(range(len(pool))):
         if candidate.shape not in {"组六", "组三"}:
             continue
         key = "".join(sorted(candidate.text))
