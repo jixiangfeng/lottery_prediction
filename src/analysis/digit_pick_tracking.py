@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import re
+import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,7 +25,10 @@ from src.analysis.digit_data import (
     normalize_digit_dataframe,
     sort_digit_dataframe_by_issue,
 )
+from src.analysis.digit_probability import DigitProbabilityPlan
+from src.analysis.digit_probability_online import DigitOnlineProbabilityPlan
 from src.analysis.digit_statistics import DigitStatisticsResult
+from src.analysis.prediction_viability import poisson_binomial_right_tail
 from src.lotteries.base import LotteryRule
 
 
@@ -39,6 +46,7 @@ class DigitPickEvaluation:
     group_candidates: list[str]
     direct_hit: bool
     group_hit: bool | None
+    experiment_id: str | None = None
     model_candidates: dict[str, list[str]] = field(default_factory=dict)
     model_hits: dict[str, bool] = field(default_factory=dict)
 
@@ -49,6 +57,7 @@ class DigitPickEvaluation:
             "sourceIssue": self.source_issue,
             "targetIssue": self.target_issue,
             "rankingMode": self.ranking_mode,
+            "experimentId": self.experiment_id,
             "actualText": self.actual_text,
             "directCandidates": self.direct_candidates,
             "groupCandidates": self.group_candidates,
@@ -93,20 +102,27 @@ class DigitLiveSummary:
 
 def save_digit_pick_snapshot(
     stats: DigitStatisticsResult,
-    plan: DigitBettingCandidateResult,
+    plan: (
+        DigitBettingCandidateResult | DigitProbabilityPlan | DigitOnlineProbabilityPlan
+    ),
     output_dir: str | Path,
+    *,
+    immutable: bool = False,
+    experiment_id: str | None = None,
 ) -> Path:
-    """保存基于当前最新一期生成的候选，等待下一期开奖复盘。"""
+    """保存基于当前最新一期生成的候选，可显式冻结为不可覆盖快照。"""
 
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "schemaVersion": 2,
+    plan_payload = plan.to_dict()
+    if experiment_id is not None and not re.fullmatch(r"[a-z0-9_]+", experiment_id):
+        raise ValueError("experiment_id 只允许小写字母、数字和下划线")
+    stable_payload = {
         "ruleCode": plan.rule_code,
         "displayName": plan.display_name,
         "sourceIssue": str(stats.latest_issue),
         "rankingMode": plan.config.ranking_mode,
-        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "candidateConfig": plan_payload["config"],
         "directCandidates": [candidate.text for candidate in plan.direct_candidates],
         "groupCandidates": [candidate.group_key for candidate in plan.group_candidates],
         "modelCandidates": plan.model_candidates,
@@ -117,10 +133,88 @@ def save_digit_pick_snapshot(
             )
         },
     }
-    output = directory / f"{plan.rule_code}_{stats.latest_issue}.json"
-    output.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    if experiment_id is not None:
+        stable_payload["experimentId"] = experiment_id
+    if "probabilityModel" in plan_payload:
+        stable_payload["probabilityModel"] = plan_payload["probabilityModel"]
+        stable_payload["probabilityDistributionFingerprint"] = plan_payload[
+            "probabilityDistributionFingerprint"
+        ]
+        stable_payload["directCandidateProbabilities"] = {
+            str(candidate["text"]): candidate["predictedProbability"]
+            for candidate in plan_payload["directCandidates"]
+        }
+        stable_payload["groupCandidateProbabilities"] = {
+            str(candidate["groupKey"]): candidate["predictedProbability"]
+            for candidate in plan_payload["groupCandidates"]
+        }
+        if "probabilityCalibration" in plan_payload:
+            stable_payload["probabilityCalibration"] = plan_payload[
+                "probabilityCalibration"
+            ]
+        if "onlineProbability" in plan_payload:
+            online_payload = plan_payload["onlineProbability"]
+            stable_payload["onlineProbability"] = {
+                "config": online_payload["config"],
+                "state": online_payload["state"],
+            }
+    serialized = json.dumps(
+        stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
+    fingerprint = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    payload = {
+        "schemaVersion": 3,
+        **stable_payload,
+        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "recommendationFingerprint": fingerprint,
+        "immutable": immutable,
+    }
+    experiment_segment = f"_{experiment_id}" if experiment_id else ""
+    output = (
+        directory / f"{plan.rule_code}{experiment_segment}_{stats.latest_issue}.json"
+    )
+    if output.exists():
+        existing = _load_snapshot(output)
+        existing_fingerprint = existing.get("recommendationFingerprint")
+        legacy_fields = (
+            "ruleCode",
+            "displayName",
+            "sourceIssue",
+            "rankingMode",
+            "directCandidates",
+            "groupCandidates",
+            "modelCandidates",
+            "ensembleModelWeights",
+        )
+        if existing_fingerprint == fingerprint:
+            if not immutable or bool(existing.get("immutable")):
+                return output
+            payload["generatedAt"] = str(
+                existing.get("generatedAt", payload["generatedAt"])
+            )
+        elif not existing_fingerprint and all(
+            existing.get(field) == payload.get(field) for field in legacy_fields
+        ):
+            payload["generatedAt"] = str(
+                existing.get("generatedAt", payload["generatedAt"])
+            )
+            payload["immutable"] = bool(existing.get("immutable")) or immutable
+        elif immutable or bool(existing.get("immutable")):
+            raise FileExistsError(
+                f"源期 {stats.latest_issue} 已存在不同推荐快照，禁止开奖前留痕被覆盖"
+            )
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".tmp", dir=directory
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
     return output
 
 
@@ -166,6 +260,9 @@ def evaluate_digit_pick_snapshot(
         source_issue=source_issue,
         target_issue=str(target["期数"]),
         ranking_mode=str(payload.get("rankingMode", "composite")),
+        experiment_id=(
+            str(payload["experimentId"]) if payload.get("experimentId") else None
+        ),
         actual_text=actual_text,
         direct_candidates=direct_candidates,
         group_candidates=group_candidates,
@@ -190,6 +287,7 @@ def build_digit_evaluation_markdown(evaluation: DigitPickEvaluation) -> str:
         f"- 推荐依据期：`{evaluation.source_issue}`",
         f"- 开奖期号：`{evaluation.target_issue}`",
         f"- 排序模式：`{evaluation.ranking_mode}`",
+        f"- 实验 ID：`{evaluation.experiment_id or 'default'}`",
         f"- 开奖号码：`{evaluation.actual_text}`",
         f"- 直选结果：`{'命中' if evaluation.direct_hit else '未命中'}`",
         f"- 组选结果：`{group_text}`",
@@ -207,27 +305,56 @@ def build_digit_evaluation_markdown(evaluation: DigitPickEvaluation) -> str:
     return "\n".join(lines)
 
 
+def _model_hit_evidence(
+    evaluations: Sequence[DigitPickEvaluation], model_name: str
+) -> tuple[list[bool], list[float]]:
+    """提取逐期模型命中及其同候选数量下的精确随机概率。"""
+
+    hits: list[bool] = []
+    probabilities: list[float] = []
+    for item in evaluations:
+        if model_name not in item.model_hits or model_name not in item.model_candidates:
+            continue
+        draw_count = len(item.actual_text)
+        if draw_count <= 0:
+            continue
+        candidates = set(item.model_candidates[model_name])
+        hits.append(bool(item.model_hits[model_name]))
+        probabilities.append(min(1.0, len(candidates) / (10**draw_count)))
+    return hits, probabilities
+
+
 def derive_live_ensemble_weights(
     evaluations: Sequence[DigitPickEvaluation],
     base_weights: Sequence[float],
     *,
-    min_samples: int = 5,
+    min_samples: int = 100,
 ) -> tuple[float, ...]:
-    """根据开奖前留痕的逐模型命中做保守调权，单模型最多浮动 20%。"""
+    """按同候选空间随机基线保守调权，单模型最多浮动 10%。
+
+    只有不少于 ``min_samples`` 期且精确单侧 p 值小于 0.01 的模型才会
+    获得正向调整，避免把 Top10 约 1% 的随机命中率误当成 50%。
+    """
 
     if len(base_weights) != len(ENSEMBLE_MODEL_NAMES):
         raise ValueError("基础权重数量与集成模型数量不一致")
     multipliers: list[float] = []
     for name in ENSEMBLE_MODEL_NAMES:
-        values = [
-            item.model_hits[name] for item in evaluations if name in item.model_hits
-        ]
+        values, probabilities = _model_hit_evidence(evaluations, name)
         if len(values) < min_samples:
             multipliers.append(1.0)
             continue
-        smoothed_rate = (sum(values) + 1.0) / (len(values) + 2.0)
-        multiplier = 1.0 + 0.4 * (smoothed_rate - 0.5)
-        multipliers.append(min(1.2, max(0.8, multiplier)))
+        observed_hits = sum(values)
+        expected_hits = sum(probabilities)
+        p_value = poisson_binomial_right_tail(probabilities, observed_hits)
+        smoothed_relative_lift = (observed_hits + 1.0) / (expected_hits + 1.0) - 1.0
+        if p_value >= 0.01 or smoothed_relative_lift <= 0:
+            multipliers.append(1.0)
+            continue
+        multiplier = 1.0 + min(0.1, 0.1 * smoothed_relative_lift)
+        multipliers.append(multiplier)
+    if all(multiplier == 1.0 for multiplier in multipliers):
+        return tuple(float(value) for value in base_weights)
     raw = [
         float(weight) * multiplier
         for weight, multiplier in zip(base_weights, multipliers)
@@ -236,8 +363,8 @@ def derive_live_ensemble_weights(
     base_total = sum(base)
     if sum(raw) <= 0:
         return tuple(float(value) for value in base_weights)
-    lower = [value * 0.8 for value in base]
-    upper = [value * 1.2 for value in base]
+    lower = [value * 0.9 for value in base]
+    upper = [value * 1.1 for value in base]
     adjusted = [0.0] * len(base)
     free = set(range(len(base)))
     remaining_total = base_total
@@ -275,7 +402,10 @@ def write_digit_evaluation(
 
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    stem = f"{evaluation.rule_code}_{evaluation.target_issue}"
+    experiment_segment = (
+        f"_{evaluation.experiment_id}" if evaluation.experiment_id else ""
+    )
+    stem = f"{evaluation.rule_code}{experiment_segment}_{evaluation.target_issue}"
     markdown_path = directory / f"{stem}.md"
     json_path = directory / f"{stem}.json"
     markdown_path.write_text(
@@ -305,13 +435,23 @@ def build_digit_live_summary(
     group_hits = sum(group_values) if group_values else None
     model_performance = {}
     for name in ENSEMBLE_MODEL_NAMES:
-        values = [item.model_hits[name] for item in ordered if name in item.model_hits]
+        values, probabilities = _model_hit_evidence(ordered, name)
         if values:
             hits = sum(values)
+            expected_hits = sum(probabilities)
+            p_value = poisson_binomial_right_tail(probabilities, hits)
             model_performance[name] = {
                 "sampleCount": len(values),
                 "hits": hits,
                 "hitRate": hits / len(values),
+                "randomHitRate": expected_hits / len(values),
+                "expectedRandomHits": expected_hits,
+                "pValue": p_value,
+                "significantAboveRandom": (
+                    len(values) >= 100
+                    and p_value < 0.01
+                    and hits + 1.0 > expected_hits + 1.0
+                ),
             }
     recommended_weights = derive_live_ensemble_weights(
         ordered, DigitCandidateConfig().ensemble_model_weights
@@ -364,20 +504,23 @@ def build_digit_live_summary_markdown(summary: DigitLiveSummary) -> str:
             [
                 "## 逐模型表现",
                 "",
-                "| 模型 | 命中 | 样本 | 命中率 | 建议权重 |",
-                "|---|---:|---:|---:|---:|",
+                "| 模型 | 命中 | 样本 | 命中率 | 随机命中率 | p值 | 可调权 | 建议权重 |",
+                "|---|---:|---:|---:|---:|---:|---|---:|",
             ]
         )
         for name, values in summary.model_performance.items():
             lines.append(
                 f"| {name} | {values['hits']} | {values['sampleCount']} | "
                 f"{float(values['hitRate']):.2%} | "
+                f"{float(values['randomHitRate']):.2%} | "
+                f"{float(values['pValue']):.6f} | "
+                f"{'是' if values['significantAboveRandom'] else '否'} | "
                 f"{summary.recommended_model_weights.get(name, 0.0):.4f} |"
             )
         lines.extend(
             [
                 "",
-                "建议权重使用加一平滑且单模型最多浮动 20%；样本不足 5 期时保持基础权重。",
+                "建议权重按同候选空间随机基线做加一平滑；至少 100 期且单侧 p<0.01 才正向调权，单模型最多浮动 10%。",
                 "",
             ]
         )

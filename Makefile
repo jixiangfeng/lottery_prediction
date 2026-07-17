@@ -1,23 +1,20 @@
-# KL8 分析工具 Makefile
+# 福彩3D、排列三、排列五分析工具 Makefile
 
-.PHONY: setup fmt lint test build run train-graph download-data daily walk-forward-kl8 digit-report digit-walk-forward h5-install h5-sync h5-dev h5-build h5-test ci clean help
+.PHONY: setup fmt lint test build run digit-fetch digit-report digit-walk-forward digit-probability-walk-forward digit-probability-online ci clean help
 .DEFAULT_GOAL := help
 
+-include .env
+export
+
 PYTHON ?= python
-RUN ?= uv run --python 3.11 --with-requirements requirements.txt python
-REPORT_COUNT ?= 10
-GROUP_SIZE ?= 10
+RUN ?= uv run --python 3.11 --with-requirements requirements-dev.txt python
 OUTPUT_DIR ?= reports
-MODE ?= auto
-STRATEGY ?=
-BATCH_TRIALS ?= 30
-WF_PERIODS ?= 300
-WF_MIN_TRAIN_SIZE ?= 200
-H5_DIR ?= h5
 DIGIT_LOTTERY ?= fc3d
 DIGIT_CSV ?= data/$(DIGIT_LOTTERY)/data.csv
+DIGIT_FETCH_PERIODS ?= 1000
 DIGIT_CANDIDATE_COUNT ?= 10
 DIGIT_JSON ?= 1
+DIGIT_FREEZE_PICK ?= 0
 DIGIT_RANKING_MODE ?= ensemble
 DIGIT_ENABLE_MONTE_CARLO ?= 1
 DIGIT_MC_SIMULATIONS ?= 20000
@@ -39,97 +36,70 @@ DIGIT_WF_MC_SIMULATIONS ?= 5000
 DIGIT_WF_ML_TRAINING_PERIODS ?= 30
 DIGIT_WF_ML_NEGATIVE_SAMPLES ?= 5
 DIGIT_WF_COMPARE_WINDOWS ?= 1
+DIGIT_PROBABILITY_VALIDATION_PERIODS ?= 180
+DIGIT_PROBABILITY_MIN_VALIDATION_PERIODS ?= 90
+DIGIT_PROBABILITY_MIN_TRAIN_SIZE ?= 100
+DIGIT_ONLINE_PERIODS ?= 500
+DIGIT_ONLINE_MIN_TRAIN_SIZE ?= 100
+DIGIT_ONLINE_TEMPERATURE ?= 0.2
+DIGIT_ONLINE_UNIFORM_PRIOR_WEIGHT ?= 0.5
+DIGIT_ONLINE_LEARNING_RATE ?= 1.0
+DIGIT_ONLINE_FIXED_SHARE ?= 0.01
+DIGIT_ONLINE_STATE_PATH ?=
+DIGIT_REBUILD_ONLINE_STATE ?= 0
 
-setup: ## 安装依赖并准备目录
-	@echo "请确认已激活 python311 (conda) 环境"
+setup: ## 安装依赖并准备运行目录
+	@echo "请确认已激活 python311 Conda 环境"
 	$(PYTHON) -m pip install --upgrade pip
-	$(PYTHON) -m pip install -r requirements.txt
 	$(PYTHON) -m pip install -r requirements-dev.txt
-	$(PYTHON) -c "from pathlib import Path; [Path(p).mkdir(parents=True, exist_ok=True) for p in ['data/kl8', 'results', 'logs']]"
-	@echo "依赖安装完成，目录已就绪"
+	$(PYTHON) -c "from pathlib import Path; [Path(p).mkdir(parents=True, exist_ok=True) for p in ['data/fc3d', 'data/pl3', 'data/pl5', 'reports', 'logs']]"
 
-fmt: ## 代码格式化
-	@echo "执行 black + isort..."
-	$(PYTHON) -m black src tests
-	$(PYTHON) -m isort src tests --profile black
+fmt: ## 格式化 Python 代码
+	$(RUN) -m black src tests scripts examples
+	$(RUN) -m isort src tests scripts examples --profile black
 
-lint: ## 静态检查
-	@echo "执行 flake8 与 mypy..."
-	$(PYTHON) -m flake8 src tests
-	$(PYTHON) -m mypy src --ignore-missing-imports
+lint: ## 检查格式、导入、代码风格和类型
+	$(RUN) -m black --check src tests scripts examples
+	$(RUN) -m isort src tests scripts examples --profile black --check-only
+	$(RUN) -m flake8 src tests scripts examples
+	$(RUN) -m mypy src
 
-test: ## 运行测试与覆盖率
-	@echo "运行 pytest..."
-	$(RUN) -m pytest tests -q
+test: ## 运行测试并强制覆盖率不低于 80%
+	$(RUN) -m pytest tests -q --cov=src --cov-report=term-missing --cov-report=xml
 
-build: ## 检查 src/scripts 语法并生成 pyc
-	@echo "编译 Python 字节码..."
-	$(PYTHON) -m compileall -q src scripts
+build: ## 检查 Python 语法并生成字节码
+	$(RUN) -m compileall -q src scripts examples
 
-run: ## 执行示例（需要已有数据文件）
-	@echo "运行快乐8高频号码统计示例..."
-	$(PYTHON) examples/analysis_example.py
+run: ## 运行三种数字彩理论概率示例
+	$(RUN) examples/digit_analysis_example.py
 
-train-graph: ## 训练共现图嵌入缓存
-	@echo "训练 Node2Vec 图嵌入..."
-	$(PYTHON) scripts/train_graph_embeddings.py --lottery kl8
+digit-fetch: ## 从官方公开接口显式抓取福彩3D或排列三历史
+	$(RUN) scripts/fetch_digit_history.py --lottery $(DIGIT_LOTTERY) --periods $(DIGIT_FETCH_PERIODS) --output $(DIGIT_CSV)
 
-download-data: ## 下载快乐8历史数据
-	$(RUN) scripts/get_data.py --name kl8
+digit-report: ## 从本地 CSV 生成数字彩日报
+	$(RUN) scripts/digit_report.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(OUTPUT_DIR) --candidate-count $(DIGIT_CANDIDATE_COUNT) --ranking-mode $(DIGIT_RANKING_MODE) --monte-carlo-simulations $(DIGIT_MC_SIMULATIONS) --ml-training-periods $(DIGIT_ML_TRAINING_PERIODS) --ml-negative-samples $(DIGIT_ML_NEGATIVE_SAMPLES) --constraint-mode $(DIGIT_CONSTRAINT_MODE) --constraint-probability-floor $(DIGIT_CONSTRAINT_PROBABILITY_FLOOR) --constraint-penalty-weight $(DIGIT_CONSTRAINT_PENALTY_WEIGHT) --probability-validation-periods $(DIGIT_PROBABILITY_VALIDATION_PERIODS) --probability-min-train-size $(DIGIT_PROBABILITY_MIN_TRAIN_SIZE) --probability-minimum-validation-periods $(DIGIT_PROBABILITY_MIN_VALIDATION_PERIODS) --online-probability-min-train-size $(DIGIT_ONLINE_MIN_TRAIN_SIZE) --online-probability-temperature $(DIGIT_ONLINE_TEMPERATURE) --online-probability-uniform-prior-weight $(DIGIT_ONLINE_UNIFORM_PRIOR_WEIGHT) --online-probability-learning-rate $(DIGIT_ONLINE_LEARNING_RATE) --online-probability-fixed-share $(DIGIT_ONLINE_FIXED_SHARE) $(if $(DIGIT_ONLINE_STATE_PATH),--online-probability-state-path $(DIGIT_ONLINE_STATE_PATH),) $(if $(filter 1 true yes,$(DIGIT_JSON)),--json,) $(if $(filter 1 true yes,$(DIGIT_ENABLE_MONTE_CARLO)),,--no-monte-carlo) $(if $(filter 1 true yes,$(DIGIT_ENABLE_ML)),,--no-ml) $(if $(filter 1 true yes,$(DIGIT_FREEZE_PICK)),--freeze-pick,) $(if $(filter 1 true yes,$(DIGIT_REBUILD_ONLINE_STATE)),--rebuild-online-probability-state,)
 
-daily: download-data ## 更新数据并生成快乐8日报、推荐快照、复盘与累计汇总
-	$(RUN) scripts/daily_report.py --count $(REPORT_COUNT) --group-size $(GROUP_SIZE) --output-dir $(OUTPUT_DIR) --mode $(MODE) --batch-trials $(BATCH_TRIALS) $(if $(STRATEGY),--strategy $(STRATEGY),)
-
-walk-forward-kl8: download-data ## 快乐8逐期前推策略回测（无未来数据污染）
-	$(RUN) scripts/walk_forward_kl8.py --output-dir $(OUTPUT_DIR) --periods $(WF_PERIODS) --min-train-size $(WF_MIN_TRAIN_SIZE) --count $(REPORT_COUNT) --group-size $(GROUP_SIZE)
-
-digit-report: ## 从本地CSV生成福彩3D/排列三/排列五数字彩报告
-	$(RUN) scripts/digit_report.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(OUTPUT_DIR) --candidate-count $(DIGIT_CANDIDATE_COUNT) --ranking-mode $(DIGIT_RANKING_MODE) --monte-carlo-simulations $(DIGIT_MC_SIMULATIONS) --ml-training-periods $(DIGIT_ML_TRAINING_PERIODS) --ml-negative-samples $(DIGIT_ML_NEGATIVE_SAMPLES) --constraint-mode $(DIGIT_CONSTRAINT_MODE) --constraint-probability-floor $(DIGIT_CONSTRAINT_PROBABILITY_FLOOR) --constraint-penalty-weight $(DIGIT_CONSTRAINT_PENALTY_WEIGHT) $(if $(filter 1 true yes,$(DIGIT_JSON)),--json,) $(if $(filter 1 true yes,$(DIGIT_ENABLE_MONTE_CARLO)),,--no-monte-carlo) $(if $(filter 1 true yes,$(DIGIT_ENABLE_ML)),,--no-ml)
-
-digit-walk-forward: ## 数字彩严格逐期前推回测，并对比均匀随机基线
+digit-walk-forward: ## 严格逐期前推并与随机基线比较
 	$(RUN) scripts/digit_walk_forward.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(DIGIT_WF_OUTPUT_DIR) --periods $(DIGIT_WF_PERIODS) --min-train-size $(DIGIT_WF_MIN_TRAIN_SIZE) --candidate-count $(DIGIT_CANDIDATE_COUNT) --baseline-runs $(DIGIT_WF_BASELINE_RUNS) --inner-validation-periods $(DIGIT_WF_INNER_VALIDATION_PERIODS) --report-prefix $(DIGIT_WF_REPORT_PREFIX) --monte-carlo-simulations $(DIGIT_WF_MC_SIMULATIONS) --ml-training-periods $(DIGIT_WF_ML_TRAINING_PERIODS) --ml-negative-samples $(DIGIT_WF_ML_NEGATIVE_SAMPLES) --constraint-mode $(DIGIT_CONSTRAINT_MODE) --constraint-probability-floor $(DIGIT_CONSTRAINT_PROBABILITY_FLOOR) --constraint-penalty-weight $(DIGIT_CONSTRAINT_PENALTY_WEIGHT) $(if $(filter 1 true yes,$(DIGIT_WF_NESTED_TUNING)),--nested-tuning,) $(if $(filter 1 true yes,$(DIGIT_WF_ADVANCED_MODELS)),--advanced-models,) $(if $(filter 1 true yes,$(DIGIT_WF_COMPARE_WINDOWS)),--compare-windows,)
 
-h5-install: ## 安装 Vue3 H5 用户端依赖
-	cd $(H5_DIR) && npm install
+digit-probability-walk-forward: ## 概率 v2 固定校准后的严格前推开发评估
+	$(RUN) scripts/digit_probability_walk_forward.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(DIGIT_WF_OUTPUT_DIR) --periods $(DIGIT_WF_PERIODS) --min-train-size $(DIGIT_WF_MIN_TRAIN_SIZE) --candidate-count $(DIGIT_CANDIDATE_COUNT) --validation-periods $(DIGIT_PROBABILITY_VALIDATION_PERIODS) --minimum-validation-periods $(DIGIT_PROBABILITY_MIN_VALIDATION_PERIODS)
 
-h5-sync: daily ## 同步最新日报 JSON 到 H5 public/report-data/latest.json
-	$(RUN) scripts/sync_h5_data.py --reports-dir $(OUTPUT_DIR) --h5-public-dir $(H5_DIR)/public
+digit-probability-online: ## 概率 v3 逐期预测后反馈的500期开发评估
+	$(RUN) scripts/digit_probability_online.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --output-dir $(DIGIT_WF_OUTPUT_DIR) --periods $(DIGIT_ONLINE_PERIODS) --min-train-size $(DIGIT_ONLINE_MIN_TRAIN_SIZE) --candidate-count $(DIGIT_CANDIDATE_COUNT) --temperature $(DIGIT_ONLINE_TEMPERATURE) --uniform-prior-weight $(DIGIT_ONLINE_UNIFORM_PRIOR_WEIGHT) --learning-rate $(DIGIT_ONLINE_LEARNING_RATE) --fixed-share $(DIGIT_ONLINE_FIXED_SHARE)
 
-h5-dev: h5-sync ## 启动 Vue3 H5 开发服务
-	cd $(H5_DIR) && npm run dev
-
-h5-test: ## 运行 Vue3 H5 测试
-	cd $(H5_DIR) && npm test
-
-h5-build: h5-sync ## 构建 Vue3 H5 生产产物
-	cd $(H5_DIR) && npm run build
-
-ci: fmt lint test build ## 本地 CI
+ci: lint test build ## 本地质量闸门
 	@echo "本地 CI 全部通过"
 
-clean: ## 清理临时文件和缓存
-	@echo "清理缓存与编译文件..."
-	$(PYTHON) -c "import shutil, pathlib; [shutil.rmtree(pathlib.Path(name), ignore_errors=True) for name in ['build', 'dist', '.pytest_cache', 'htmlcov']]"
-	$(PYTHON) -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"
-	$(PYTHON) -c "import pathlib; [p.unlink() for p in pathlib.Path('.').rglob('*.pyc')]"
+clean: ## 清理缓存与构建产物
+	$(RUN) -c "import pathlib, shutil; [shutil.rmtree(path, ignore_errors=True) for name in ['build', 'dist', '.pytest_cache', 'htmlcov'] for path in [pathlib.Path(name)]]; [shutil.rmtree(path, ignore_errors=True) for path in pathlib.Path('.').rglob('__pycache__')]"
 
 help: ## 查看可用命令
-	@echo "可用任务："
-	@echo "  make setup          - 安装依赖并初始化目录"
-	@echo "  make download-data  - 下载快乐8历史数据"
-	@echo "  make daily          - 更新数据并生成日报/推荐快照/复盘/累计汇总"
-	@echo "  make walk-forward-kl8 - 快乐8逐期前推策略回测（WF_PERIODS=300）"
-	@echo "  make digit-report   - 数字彩日报（默认启用 Monte Carlo/ML，可用 DIGIT_ENABLE_*=0 关闭）"
-	@echo "  make digit-walk-forward - 数字彩严格前推（Makefile 默认高级模型；直接 CLI 需 --advanced-models）"
-	@echo "  make h5-install     - 安装 Vue3 H5 用户端依赖"
-	@echo "  make h5-dev         - 同步数据并启动 Vue3 H5 开发服务"
-	@echo "  make h5-build       - 同步数据并构建 Vue3 H5 产物"
-	@echo "  make h5-test        - 运行 Vue3 H5 测试"
-	@echo "  make fmt            - 格式化代码"
-	@echo "  make lint           - 静态检查"
-	@echo "  make test           - 运行测试"
-	@echo "  make build          - compileall 检查 src 与 scripts"
-	@echo "  make run            - 运行示例分析"
-	@echo "  make train-graph    - 训练共现图嵌入缓存"
-	@echo "  make ci             - 本地 CI（fmt+lint+test+build）"
-	@echo "  make clean          - 清理缓存文件"
+	@echo "make setup                安装依赖"
+	@echo "make run                  运行最小示例"
+	@echo "make digit-fetch          抓取福彩3D或排列三官方历史"
+	@echo "make digit-report         生成数字彩日报"
+	@echo "make digit-walk-forward   执行严格前推回测"
+	@echo "make digit-probability-walk-forward 执行概率 v2 开发评估"
+	@echo "make digit-probability-online 执行概率 v3 在线反馈评估"
+	@echo "make ci                   运行完整质量闸门"

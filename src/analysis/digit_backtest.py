@@ -80,7 +80,9 @@ def backtest_digit_candidates(
     candidates = candidate_result.candidates
     direct_texts = [candidate.text for candidate in candidates]
     group_enabled = rule.draw_count == 3
-    group_keys = {candidate.text: _group_key(candidate.text) for candidate in candidates}
+    group_keys = {
+        candidate.text: _group_key(candidate.text) for candidate in candidates
+    }
     rows: list[DigitBacktestRow] = []
     direct_hits = 0
     group_hits = 0
@@ -90,7 +92,11 @@ def backtest_digit_candidates(
         actual_text = _text(numbers)
         actual_group = _group_key(actual_text)
         direct = [text for text in direct_texts if text == actual_text]
-        group = [text for text in direct_texts if group_keys[text] == actual_group] if group_enabled else None
+        group = (
+            [text for text in direct_texts if group_keys[text] == actual_group]
+            if group_enabled
+            else None
+        )
         direct_hits += len(direct)
         if group is not None:
             group_hits += len(group)
@@ -113,7 +119,11 @@ def backtest_digit_candidates(
         direct_hits=direct_hits,
         direct_hit_rate=direct_hits / total_checks if total_checks else 0.0,
         group_hits=group_hits if group_enabled else None,
-        group_hit_rate=(group_hits / total_checks if total_checks else 0.0) if group_enabled else None,
+        group_hit_rate=(
+            (group_hits / total_checks if total_checks else 0.0)
+            if group_enabled
+            else None
+        ),
         rows=rows,
     )
 

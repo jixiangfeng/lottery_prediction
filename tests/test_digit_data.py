@@ -21,7 +21,12 @@ def test_normalize_digit_dataframe_accepts_standard_columns():
     normalized = normalize_digit_dataframe(df, rule)
 
     assert list(normalized.columns) == ["期数", "百位", "十位", "个位"]
-    assert normalized.iloc[0].to_dict() == {"期数": "2026002", "百位": 1, "十位": 2, "个位": 3}
+    assert normalized.iloc[0].to_dict() == {
+        "期数": "2026002",
+        "百位": 1,
+        "十位": 2,
+        "个位": 3,
+    }
     assert normalized.iloc[1]["个位"] == 9
 
 

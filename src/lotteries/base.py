@@ -63,11 +63,17 @@ def validate_numbers(rule: LotteryRule, numbers: Sequence[int]) -> list[int]:
 
     normalized = [int(number) for number in numbers]
     if len(normalized) != rule.draw_count:
-        raise ValueError(f"{rule.display_name}号码数量必须为 {rule.draw_count}，收到 {len(normalized)}")
+        raise ValueError(
+            f"{rule.display_name}号码数量必须为 {rule.draw_count}，收到 {len(normalized)}"
+        )
     if not rule.allow_repeated and len(set(normalized)) != len(normalized):
         raise ValueError(f"{rule.display_name}不允许重复号码")
     for index, number in enumerate(normalized):
-        spec = rule.ball_specs[index] if len(rule.ball_specs) == rule.draw_count else rule.ball_specs[0]
+        spec = (
+            rule.ball_specs[index]
+            if len(rule.ball_specs) == rule.draw_count
+            else rule.ball_specs[0]
+        )
         if number < spec.min_number or number > spec.max_number:
             raise ValueError(
                 f"{rule.display_name}{spec.name}号码范围必须在 {spec.min_number}-{spec.max_number}，收到 {number}"

@@ -1,97 +1,42 @@
-# 运维与监控指南（多线程版本）
+# 运维指南
 
-## 环境要求
-- 建议在名为 `python311` 的 Conda 环境中运行，保持依赖一致。
-- 网络需可访问 `https://datachart.500.com` 与 `https://data.917500.cn`。
-- `make setup` 会自动创建 `data/kl8`、`results`、`logs` 等目录。
-- 建议在批量任务前执行：
-  ```bash
-  make download-data
-  make train-graph
-  python src/analysis/kl8_analysis.py ...  # 先单次验证，再批量投入
-  ```
+## 环境
 
-## 数字彩闭环运行建议
+- 使用名为 python311 的 Conda 环境或等效 Python 3.11 虚拟环境。
+- 运行依赖已在 requirements.txt 固定直接版本。
+- 日报和回测只从本地 CSV 读取，不需要网络权限。
+- 只有显式 `make digit-fetch` 需要网络；来源固定为 `www.cwl.gov.cn` 和 `jc.zhcw.com`，不接受命令行自定义 URL。
 
-```bash
-make digit-walk-forward \
-  DIGIT_LOTTERY=fc3d \
-  DIGIT_CSV=data/fc3d/data.csv \
-  DIGIT_WF_PERIODS=30 \
-  DIGIT_WF_BASELINE_RUNS=20 \
-  DIGIT_WF_ADVANCED_MODELS=1 \
-  DIGIT_WF_COMPARE_WINDOWS=1 \
-  DIGIT_WF_NESTED_TUNING=1 \
-  DIGIT_WF_INNER_VALIDATION_PERIODS=10
-```
+## 日常命令
 
-- 日常快速验证可将 `DIGIT_WF_BASELINE_RUNS` 降为 5；正式比较建议至少 20。
-- Makefile 默认开启蒙特卡洛/ML 票与独立窗口比较；快速冒烟可设 `DIGIT_WF_ADVANCED_MODELS=0 DIGIT_WF_COMPARE_WINDOWS=0`。
-- 高级模型成本可用 `DIGIT_WF_MC_SIMULATIONS`、`DIGIT_WF_ML_TRAINING_PERIODS`、`DIGIT_WF_ML_NEGATIVE_SAMPLES` 调整；报告中必须保留是否启用的状态。
-- 排列五嵌套前推成本最高，先用 5～10 个外层目标期冒烟，再扩大窗口。
-- 使用 `DIGIT_WF_REPORT_PREFIX=second_round` 写入独立文件，避免覆盖既有评估报告。
-- 监控每期 `selectedConfigTrainEndIssue < issue`，若不满足应立即停止使用报告。
-- 监控 `strategyScoreBucketDistributions` 和 `windowComparison`；若真实开奖号长期未进入高分位，不得以候选分数代替命中证据。
-- 结果不超过随机时必须如实保留；本工具不能保证提高中奖概率。
-- `make digit-report` 默认 `DIGIT_RANKING_MODE=ensemble`；切回旧排序时显式设置 `DIGIT_RANKING_MODE=composite`。
-- 结构约束默认 `DIGIT_CONSTRAINT_MODE=soft`；切换 `hard` 前必须使用相同阈值完成严格前推，并监控过滤空间是否过小。
-- 每期快照的 `modelCandidates` 只记录当期实际有分数的模型；ML 未训练或蒙特卡洛关闭时不得生成伪模型复盘样本。
-- 自动调权只使用 `reports/evaluations/<彩种>_live_summary.json` 中有快照证据的逐模型样本；单模型样本不足 5 期保持基础权重。
-- 数字彩日报会写入 `reports/picks/digit`，并把已开奖快照复盘到 `reports/evaluations/<彩种>_<期号>.*`；不得在开奖后删除或改写历史快照再重新统计。
+    make digit-report DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/data.csv
+    make digit-report DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/data.csv DIGIT_FREEZE_PICK=1
+    make digit-fetch DIGIT_LOTTERY=fc3d DIGIT_FETCH_PERIODS=1000
+    make digit-walk-forward DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/data.csv DIGIT_WF_PERIODS=30
+    make digit-probability-walk-forward DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/data.csv DIGIT_WF_PERIODS=500
+    make digit-probability-online DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
+    make digit-report DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv DIGIT_RANKING_MODE=online_probability OUTPUT_DIR=reports/probability_v3_online_daily DIGIT_JSON=1
+    make ci
 
-## 关键监控指标
-| 项目 | 检查方式 | 目标 |
-|------|----------|------|
-| 下载次数 | 主线程日志 | 每次运行仅下载一次 |
-| 线程数 | `threading.active_count()` | ≈ `max_workers` + 1 |
-| 内存使用 | `psutil.virtual_memory()` | < 80% |
-| I/O 负载 | 监控磁盘写入速率 | 避免长时间 100% |
-| Copula 诊断 | 日志 `cond≈...`、`effective_draws=...` | 条件数不过高、样本量 ≥ `min_draws` |
+## 监控
 
-示例命令：
-```bash
-python -c "import threading; print('active threads:', threading.active_count())"
-python -c "import psutil; print('memory usage:', psutil.virtual_memory().percent, '%')"
-```
+- 检查 statisticsUpdate.mode 是否符合 full_rebuild、cache_hit、incremental 或 stale_view。
+- 检查前推每期 selectedConfigTrainEndIssue 小于目标 issue。
+- 监控候选过滤空间大小、模型激活数和真实开奖号分位桶。
+- 排列五先小窗口运行，避免一次扩大期数、基线次数和高级模型成本。
+- 三位彩完整 500 期、16 模型并行验证在本机约耗时 50 分钟；运行前确认CPU时间窗口，后续应增加逐期缓存与进度输出。
+- 保留 reports/picks/digit 中的开奖前快照，不得开奖后改写。
+- 冻结实验每期都应在开奖前登记 CSV 哈希、推荐指纹和候选；本地不可变标记不能替代可信时间戳。
+- 概率日报建议使用独立 `OUTPUT_DIR=reports/probability_v2`；校准失败时检查 `probabilityCalibration.fallbackReason`，不得绕过守门强制启用权重。
+- 在线概率 v3 检查每期 `weightsBefore` 与上一期 `weightsAfter` 一致，并确认 `trainEndIssue` 小于目标期；评估段结束前不得修改固定温度、学习率和收缩比例。
+- 在线日报检查 `onlineProbability.stateUpdate.mode`：首次应为 `full_rebuild`，仅新增开奖应为 `incremental`，无新增应为 `cache_hit`；`historyFingerprint` 失配时允许自动 `full_rebuild`。
+- 在线日报首次全量重放可能较慢；后续只重算新增目标期，状态文件和开奖前推荐快照均需纳入备份。
 
 ## 故障排查
-| 症状 | 可能原因 | 解决方案 |
-|------|----------|----------|
-| 下载失败 | 网络受限或域名未放行 | 配置代理或启用离线模式（`--download 0`） |
-| 线程卡住 | 锁竞争 / I/O 拥堵 | 降低 `--max_workers`，清理结果目录 |
-| Copula 跳过 | 样本量不足 | 提高 `--limit_line` 或 `analysis.copula.min_draws` |
-| 互信息惩罚过高 | 权重偏大 | 调整 `analysis.graph_embedding.weight` |
-| 结果混淆 | 输出目录冲突 | 使用 `--path` 区分任务 |
 
-调试示例：
-```bash
-python src/analysis/kl8_analysis.py --max_workers 1 --copula_mode force --debug 1
-python src/analysis/kl8_running.py --max_workers 1 --cal_nums_list "5" --total_create_list "10"
-```
-
-## 常驻任务建议
-```bash
-# 每日 05:00 下载数据
-0 5 * * * cd /path/to/kl8-lottery-analyzer && make download-data
-
-# 每日 06:00 执行全算法分析（示例参数）
-0 6 * * * cd /path/to/kl8-lottery-analyzer && \
-python src/analysis/kl8_analysis.py \
-  --cal_nums 20 --total_create 240 --limit_line 240 \
-  --advanced_mode 2 --feature_mode hybrid \
-  --rule_filter soft --rule_support 0.08 --rule_confidence 0.7 \
-  --copula_mode force --copula_samples 64 --copula_shrinkage 0.1 \
-  >> logs/daily_analysis.log 2>&1
-
-# 每周日 00:00 批量收益分析
-0 0 * * 0 cd /path/to/kl8-lottery-analyzer && \
-python src/analysis/kl8_cash_plus.py --path weekly_results --max_workers 6 \
-  >> logs/weekly_cash.log 2>&1
-```
-
-## 告警建议
-- 下载失败连续 ≥3 次。
-- 单次任务执行超过 10 分钟未结束。
-- 内存使用率 ≥ 85% 持续 5 分钟。
-- Copula 拟合条件数异常升高（>1e6）或样本量低于阈值。
-- 结果输出目录增长过快，需要定期清理。
+1. CSV 列错误：先核对 README 的两种输入格式。
+2. 快照损坏：使用 --rebuild-stats 强制重建。
+3. 运行过慢：降低 Monte Carlo 次数、前推期数或 baseline-runs。
+4. 结果与随机相近：如实保留结果，不以候选分替代命中证据。
+5. 并发写入异常：检查目标目录权限和文件系统是否支持 flock、fsync、os.replace。
+6. 官方抓取失败：确认域名可访问后重试；字段校验失败时保留旧 CSV，不要绕过校验。

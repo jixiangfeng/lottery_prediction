@@ -32,6 +32,11 @@ from src.analysis.digit_data import (
     sort_digit_dataframe_by_issue,
 )
 from src.analysis.digit_statistics import analyze_digit_history
+from src.analysis.prediction_viability import (
+    PredictionViabilityReport,
+    build_prediction_viability_report,
+    calculate_group_random_probability,
+)
 from src.lotteries.base import LotteryRule
 
 
@@ -57,6 +62,8 @@ class DigitWalkForwardIssue:
     actual_rank: int
     eligible_count: int
     actual_rank_percentile: float
+    direct_random_probability: float
+    group_random_probability: float | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +85,8 @@ class DigitWalkForwardIssue:
             "actualRank": self.actual_rank,
             "eligibleCount": self.eligible_count,
             "actualRankPercentile": self.actual_rank_percentile,
+            "directRandomProbability": self.direct_random_probability,
+            "groupRandomProbability": self.group_random_probability,
         }
 
 
@@ -142,10 +151,11 @@ class DigitWalkForwardReport:
     active_model_names: tuple[str, ...]
     available_model_names: tuple[str, ...]
     model_activation_counts: dict[str, int]
+    strategy_viability: dict[str, PredictionViabilityReport]
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "ruleCode": self.rule_code,
             "displayName": self.display_name,
             "periodCount": self.period_count,
@@ -167,6 +177,10 @@ class DigitWalkForwardReport:
             "availableModelNames": list(self.available_model_names),
             "availableModelCount": len(self.available_model_names),
             "modelActivationCounts": self.model_activation_counts,
+            "strategyViability": {
+                name: viability.to_dict()
+                for name, viability in self.strategy_viability.items()
+            },
             "disclaimer": "严格逐期前推仅用于历史验证，随机基线和统计策略都不能保证提高中奖概率。",
         }
 
@@ -202,6 +216,12 @@ def _evaluate_issue(
     if rule.draw_count == 3 and not group_keys:
         group_keys = sorted({_group_key(candidate.text) for candidate in candidates})
     group_hit = _group_key(actual_text) in group_keys if rule.draw_count == 3 else None
+    direct_random_probability = len(set(candidate_texts)) / (10**rule.draw_count)
+    group_random_probability = (
+        calculate_group_random_probability(group_keys, draw_count=rule.draw_count)
+        if rule.draw_count == 3
+        else None
+    )
     position_hits = [
         any(
             candidate.numbers[index] == actual_numbers[index]
@@ -247,6 +267,8 @@ def _evaluate_issue(
         actual_rank_percentile=min(
             1.0, effective_rank / max(1, effective_eligible_count)
         ),
+        direct_random_probability=direct_random_probability,
+        group_random_probability=group_random_probability,
     )
 
 
@@ -311,6 +333,35 @@ def _summarize(
             if target_periods
             else 0.0
         ),
+    )
+
+
+def _build_strategy_viability(
+    summary: DigitWalkForwardStrategySummary,
+) -> PredictionViabilityReport:
+    """使用每期真实候选覆盖率构建策略可行性闸门。"""
+
+    direct_hits = [issue.direct_hit for issue in summary.issues]
+    direct_probabilities = [issue.direct_random_probability for issue in summary.issues]
+    group_hits = (
+        [bool(issue.group_hit) for issue in summary.issues]
+        if all(issue.group_hit is not None for issue in summary.issues)
+        else None
+    )
+    group_probabilities = (
+        [
+            float(issue.group_random_probability)
+            for issue in summary.issues
+            if issue.group_random_probability is not None
+        ]
+        if group_hits is not None
+        else None
+    )
+    return build_prediction_viability_report(
+        direct_hits,
+        direct_probabilities,
+        group_hits=group_hits,
+        group_random_probabilities=group_probabilities,
     )
 
 
@@ -839,7 +890,7 @@ def run_digit_walk_forward_backtest(
         "current_statistics": _score_bucket_distribution(current.issues),
         "ensemble_voting": _score_bucket_distribution(ensemble.issues),
     }
-    window_comparison = []
+    window_comparison: list[dict[str, Any]] = []
     for label, evidence in window_evidence.items():
         target_count = len(evidence)
         top_hits = sum(hit for hit, _ in evidence)
@@ -866,6 +917,10 @@ def run_digit_walk_forward_backtest(
         for name, values in model_evidence.items()
         if values
     }
+    strategy_viability = {
+        "current_statistics": _build_strategy_viability(current),
+        "ensemble_voting": _build_strategy_viability(ensemble),
+    }
     return DigitWalkForwardReport(
         rule_code=rule.code,
         display_name=rule.display_name,
@@ -890,6 +945,7 @@ def run_digit_walk_forward_backtest(
         model_activation_counts={
             name: model_activation_counts[name] for name in ENSEMBLE_MODEL_NAMES
         },
+        strategy_viability=strategy_viability,
     )
 
 
@@ -925,8 +981,61 @@ def build_digit_walk_forward_markdown(report: DigitWalkForwardReport) -> str:
             else "-"
         )
         lines.append(
-            f"| {summary.strategy} | {summary.direct_hits}/{summary.target_periods} ({summary.direct_hit_rate:.2%}) | {group_text} | {summary.mean_candidate_score:.4f} | {rank_text} | {summary.max_direct_miss_streak} |"
+            f"| {summary.strategy} | {summary.direct_hits}/{summary.target_periods} "
+            f"({summary.direct_hit_rate:.2%}) | {group_text} | "
+            f"{summary.mean_candidate_score:.4f} | {rank_text} | "
+            f"{summary.max_direct_miss_streak} |"
         )
+    lines.extend(
+        [
+            "",
+            "## 统计可行性闸门",
+            "",
+            "只有同时满足至少 500 期、单侧 p<0.01、相对随机提升至少 25%、"
+            "99% Wilson 下界高于随机基准、3 个非重叠时间块均不低于随机时才通过。"
+            "三位彩还要求直选和组选分别通过。",
+            "",
+            "| 策略 | 整体 | 直选 | 组选 | 判定原因 |",
+            "|---|---|---|---|---|",
+        ]
+    )
+    for strategy, viability in report.strategy_viability.items():
+        group_status = (
+            "-"
+            if viability.group_gate is None
+            else ("通过" if viability.group_gate.viable else "不通过")
+        )
+        lines.append(
+            f"| {strategy} | {'通过' if viability.viable else '不通过'} | "
+            f"{'通过' if viability.direct_gate.viable else '不通过'} | "
+            f"{group_status} | {viability.reason} |"
+        )
+    for strategy, viability in report.strategy_viability.items():
+        lines.extend(["", f"### `{strategy}` 明细", ""])
+        for label, metric in (
+            ("直选", viability.direct_gate),
+            ("组选", viability.group_gate),
+        ):
+            if metric is None:
+                continue
+            relative_lift = (
+                "不可计算"
+                if metric.relative_lift is None
+                else f"{metric.relative_lift:.2%}"
+            )
+            lines.append(
+                f"- {label}：实际 `{metric.hits}/{metric.periods}`，随机期望 "
+                f"`{metric.expected_random_hits:.2f}`，相对提升 `{relative_lift}`，"
+                f"单侧 p 值 `{metric.p_value:.6f}`，99% Wilson 下界 "
+                f"`{metric.wilson_lower_bound_99:.4%}`。"
+            )
+            block_text = "；".join(
+                f"块{block.index} {block.hits}/{block.periods} "
+                f"(随机期望{block.expected_random_hits:.2f}, "
+                f"{'达标' if block.meets_random_baseline else '未达标'})"
+                for block in metric.blocks
+            )
+            lines.append(f"- {label}时间稳定性：{block_text}。")
     distribution = report.random_baseline_distribution
     direct_distribution = distribution.get("directHits", {})
     lines.extend(
@@ -934,7 +1043,10 @@ def build_digit_walk_forward_markdown(report: DigitWalkForwardReport) -> str:
             "",
             "## 多随机基线分布",
             "",
-            f"- 直选命中均值 / 5% / 95%：`{direct_distribution.get('mean', 0.0):.2f}` / `{direct_distribution.get('q05', 0.0):.2f}` / `{direct_distribution.get('q95', 0.0):.2f}`",
+            f"- 直选命中均值 / 5% / 95%："
+            f"`{direct_distribution.get('mean', 0.0):.2f}` / "
+            f"`{direct_distribution.get('q05', 0.0):.2f}` / "
+            f"`{direct_distribution.get('q95', 0.0):.2f}`",
             f"- 直选命中随机百分位：`{distribution.get('currentStrategyPercentile', 0.0):.1f}%`",
             f"- 选择器内部诊断 candidateScorePercentile：`{distribution.get('candidateScorePercentile', 0.0):.1f}%`",
             "- 诊断解释：使用 mid-rank；当所有随机运行的候选均分打平时，mid-rank 50% 是正常结果，不代表预测优势。",
@@ -977,7 +1089,9 @@ def build_digit_walk_forward_markdown(report: DigitWalkForwardReport) -> str:
             for bucket in buckets:
                 lower, upper = bucket["rankPercentileRange"]
                 lines.append(
-                    f"| {lower:.0%}-{upper:.0%} | {bucket['hits']}/{report.period_count} | {bucket['rate']:.2%} | {bucket['expectedRate']:.2%} |"
+                    f"| {lower:.0%}-{upper:.0%} | "
+                    f"{bucket['hits']}/{report.period_count} | "
+                    f"{bucket['rate']:.2%} | {bucket['expectedRate']:.2%} |"
                 )
     if report.nested_tuning:
         selected = report.strategy_summaries[0].issues

@@ -97,12 +97,23 @@ def test_digit_walk_forward_contains_baseline_and_required_metrics(tmp_path):
     assert "严格逐期前推" in markdown
     assert "uniform_random" in markdown
     assert "ensemble_voting" in markdown
+    assert "统计可行性闸门" in markdown
+    assert "不通过" in markdown
     assert markdown_path.exists()
     assert payload["periodCount"] == 5
     assert payload["strategies"][0]["issues"]
     assert payload["scoreBucketDistribution"]
     assert payload["strategies"][0]["issues"][0]["eligibleCount"] >= 1
     assert 0.0 <= payload["strategies"][0]["issues"][0]["actualRankPercentile"] <= 1.0
+    assert payload["strategies"][0]["issues"][0][
+        "directRandomProbability"
+    ] == pytest.approx(0.01)
+    assert payload["strategies"][0]["issues"][0]["groupRandomProbability"] > 0
+    assert set(payload["strategyViability"]) == {
+        "current_statistics",
+        "ensemble_voting",
+    }
+    assert payload["strategyViability"]["current_statistics"]["viable"] is False
 
 
 def test_pl5_walk_forward_disables_group_metric():
@@ -322,7 +333,7 @@ def test_walk_forward_keeps_legacy_json_fields_while_adding_quality_metrics():
         baseline_runs=2,
     ).to_dict()
 
-    assert payload["schemaVersion"] == 4
+    assert payload["schemaVersion"] == 5
     assert payload["strategies"][0]["issues"][0]["candidateTexts"]
     assert "positionHitCoverage" in payload["strategies"][0]
     assert "randomBaselineDistribution" in payload
@@ -330,6 +341,7 @@ def test_walk_forward_keeps_legacy_json_fields_while_adding_quality_metrics():
     assert "ensemble_voting" in payload["strategyBaselineDistributions"]
     assert "scoreBucketDistribution" in payload
     assert "meanCandidateScore" in payload["strategies"][0]
+    assert "strategyViability" in payload
 
 
 def test_walk_forward_can_enable_monte_carlo_and_ml_voters_without_future_data():

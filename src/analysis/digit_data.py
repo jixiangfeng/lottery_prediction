@@ -19,7 +19,15 @@ import pandas as pd
 from src.lotteries.base import LotteryRule, validate_numbers
 
 ISSUE_COLUMN_ALIASES = ("期数", "期号", "issue", "Issue", "draw", "draw_no", "drawNo")
-NUMBER_COLUMN_ALIASES = ("开奖号码", "号码", "number", "numbers", "result", "openCode", "drawNumbers")
+NUMBER_COLUMN_ALIASES = (
+    "开奖号码",
+    "号码",
+    "number",
+    "numbers",
+    "result",
+    "openCode",
+    "drawNumbers",
+)
 
 
 def sort_digit_dataframe_by_issue(df: pd.DataFrame, *, ascending: bool) -> pd.DataFrame:
@@ -75,7 +83,9 @@ def _issue_series(df: pd.DataFrame) -> pd.Series:
     return df[issue_column].astype(str).str.strip()
 
 
-def _normalize_from_position_columns(df: pd.DataFrame, rule: LotteryRule) -> pd.DataFrame | None:
+def _normalize_from_position_columns(
+    df: pd.DataFrame, rule: LotteryRule
+) -> pd.DataFrame | None:
     if not all(column in df.columns for column in rule.number_columns):
         return None
     output = pd.DataFrame({"期数": _issue_series(df)})
@@ -91,7 +101,10 @@ def _normalize_from_number_column(df: pd.DataFrame, rule: LotteryRule) -> pd.Dat
             f"数字彩数据缺少号码列；需要位置列 {rule.number_columns}，或开奖号码/number 等合并号码列"
         )
     output = pd.DataFrame({"期数": _issue_series(df)})
-    rows = [_digits_from_value(value, rule.draw_count) for value in df[number_column].tolist()]
+    rows = [
+        _digits_from_value(value, rule.draw_count)
+        for value in df[number_column].tolist()
+    ]
     for index, column in enumerate(rule.number_columns):
         output[column] = [numbers[index] for numbers in rows]
     return output
@@ -116,10 +129,14 @@ def normalize_digit_dataframe(df: pd.DataFrame, rule: LotteryRule) -> pd.DataFra
     for _, row in output.iterrows():
         validate_numbers(rule, [int(row[column]) for column in rule.number_columns])
 
-    return sort_digit_dataframe_by_issue(output[["期数", *rule.number_columns]], ascending=False)
+    return sort_digit_dataframe_by_issue(
+        output[["期数", *rule.number_columns]], ascending=False
+    )
 
 
-def load_digit_csv(path: str | Path, rule: LotteryRule, *, encoding: str = "utf-8") -> pd.DataFrame:
+def load_digit_csv(
+    path: str | Path, rule: LotteryRule, *, encoding: str = "utf-8"
+) -> pd.DataFrame:
     """读取 CSV 并标准化数字彩数据。"""
 
     csv_path = Path(path)

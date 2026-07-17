@@ -123,6 +123,7 @@ def test_generate_digit_report_from_csv_writes_json_when_enabled(tmp_path: Path)
     assert payload["modelCandidates"]
     assert "高级模型状态" in output.read_text(encoding="utf-8")
     assert Path(payload["artifacts"]["pickSnapshot"]).exists()
+    assert "逐模型至少积累 100 期且单侧 p<0.01" in output.read_text(encoding="utf-8")
 
 
 def test_digit_report_evaluates_previous_snapshot_when_new_issue_arrives(
@@ -394,6 +395,7 @@ def test_digit_report_cli_accepts_statistics_snapshot_flags(
             str(tmp_path / "state.json"),
             "--rebuild-stats",
             "--no-incremental-stats",
+            "--freeze-pick",
         ]
     )
 
@@ -401,6 +403,7 @@ def test_digit_report_cli_accepts_statistics_snapshot_flags(
     assert captured["stats_snapshot_path"] == str(tmp_path / "state.json")
     assert captured["rebuild_stats"] is True
     assert captured["incremental_stats"] is False
+    assert captured["freeze_pick_snapshot"] is True
 
 
 def test_digit_report_appending_one_issue_uses_incremental_statistics(tmp_path: Path):

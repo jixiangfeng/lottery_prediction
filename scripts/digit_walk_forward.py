@@ -11,13 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.analysis.digit_data import load_digit_csv
-from src.analysis.digit_candidates import DigitCandidateConfig
-from src.analysis.digit_walk_forward import (
+from src.analysis.digit_candidates import DigitCandidateConfig  # noqa: E402
+from src.analysis.digit_data import load_digit_csv  # noqa: E402
+from src.analysis.digit_walk_forward import (  # noqa: E402
     run_digit_walk_forward_backtest,
     write_digit_walk_forward_reports,
 )
-from src.lotteries import get_lottery_rule
+from src.lotteries import get_lottery_rule  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:

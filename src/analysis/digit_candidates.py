@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """数字彩候选生成器。
 
-基于位置频率与当前遗漏生成福彩3D、排列三、排列五候选，并用和值、跨度、形态做过滤。
+基于位置频率与当前遗漏生成福彩3D、排列三、排列五候选，并用和值、跨度、形态参与评分和可选过滤。
 它是统计辅助工具，不保证命中。
 """
 
@@ -11,8 +11,8 @@ import heapq
 import itertools
 import math
 import random
-from collections.abc import Mapping
 from collections import Counter, OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from types import MappingProxyType
@@ -70,7 +70,7 @@ class DigitCandidateConfig:
     frequency_weight: float = 0.7
     omission_weight: float = 0.3
     random_weight: float = 0.15
-    exclude_latest: bool = True
+    exclude_latest: bool | None = None
     frequency_windows: tuple[int, ...] = (30, 50, 100, 300)
     frequency_window_weights: tuple[float, ...] = (0.35, 0.3, 0.2, 0.15)
     omission_cap: int = 30
@@ -130,8 +130,15 @@ class DigitCandidateConfig:
             raise ValueError("评分权重不得为负数")
         if self.score_floor < 0:
             raise ValueError("score_floor 不得为负数")
-        if self.ranking_mode not in {"composite", "ensemble"}:
-            raise ValueError("ranking_mode 只支持 composite 或 ensemble")
+        if self.ranking_mode not in {
+            "composite",
+            "ensemble",
+            "probability",
+            "online_probability",
+        }:
+            raise ValueError(
+                "ranking_mode 只支持 composite、ensemble、probability 或 online_probability"
+            )
         if len(self.ensemble_model_weights) != len(ENSEMBLE_MODEL_NAMES):
             raise ValueError("集成模型权重数量必须与子模型数量一致")
         if any(float(weight) < 0 for weight in self.ensemble_model_weights):
@@ -205,6 +212,7 @@ class DigitCandidate:
     ensemble_score: float = 0.0
     model_rank_percentiles: tuple[float, ...] = ()
     constraint_penalty: float = 0.0
+    predicted_probability: float | None = None
 
     @property
     def model_weight(self) -> float:
@@ -245,6 +253,7 @@ class DigitCandidate:
             },
             "topDecileVotes": self.top_decile_votes,
             "constraintPenalty": self.constraint_penalty,
+            "predictedProbability": self.predicted_probability,
         }
 
 
@@ -261,6 +270,7 @@ class DigitGroupCandidate:
     ensemble_score: float = 0.0
     model_rank_percentiles: tuple[float, ...] = ()
     ranking_model: str = "composite_aggregation"
+    predicted_probability: float | None = None
 
     @property
     def composite_model_weight(self) -> float:
@@ -286,6 +296,7 @@ class DigitGroupCandidate:
                 )
             },
             "rankingModel": self.ranking_model,
+            "predictedProbability": self.predicted_probability,
         }
 
 
@@ -495,20 +506,20 @@ def _build_score_context(
     positions = list(stats.position_frequency)
     marginal = {}
     for position in positions:
-        windows = {
+        marginal_windows = {
             window: probabilities[position]
             for window, probabilities in stats.position_probabilities.items()
             if position in probabilities
         }
-        marginal[position] = _weighted_log_map(windows, config)
+        marginal[position] = _weighted_log_map(marginal_windows, config)
     pair = {}
     for pair_key in stats.pair_probabilities.get(int(config.frequency_windows[0]), {}):
-        windows = {
+        pair_windows = {
             window: probabilities[pair_key]
             for window, probabilities in stats.pair_probabilities.items()
             if pair_key in probabilities
         }
-        pair[pair_key] = _weighted_log_map(windows, config)
+        pair[pair_key] = _weighted_log_map(pair_windows, config)
     omission = {
         position: {
             digit: _weighted_omission_score(stats, position, digit, config)
@@ -784,7 +795,7 @@ def _ranked_digits(
 def _effective_config(
     rule: LotteryRule, config: DigitCandidateConfig
 ) -> DigitCandidateConfig:
-    """补齐更适合实战候选的默认过滤条件。"""
+    """补齐玩法默认值；三位彩默认不硬排除任何合法号码。"""
 
     is_default_fc3d_profile = (
         rule.code == "fc3d"
@@ -798,20 +809,18 @@ def _effective_config(
     if rule.draw_count == 3:
         return DigitCandidateConfig(
             count=config.count,
-            sum_min=6 if config.sum_min is None else config.sum_min,
-            sum_max=21 if config.sum_max is None else config.sum_max,
-            span_min=1 if config.span_min is None else config.span_min,
-            span_max=9 if config.span_max is None else config.span_max,
-            allowed_shapes=(
-                ("组三", "组六")
-                if config.allowed_shapes is None
-                else config.allowed_shapes
-            ),
+            sum_min=config.sum_min,
+            sum_max=config.sum_max,
+            span_min=config.span_min,
+            span_max=config.span_max,
+            allowed_shapes=config.allowed_shapes,
             top_digits_per_position=config.top_digits_per_position,
             frequency_weight=config.frequency_weight,
             omission_weight=0.03 if is_default_fc3d_profile else config.omission_weight,
             random_weight=config.random_weight,
-            exclude_latest=config.exclude_latest,
+            exclude_latest=(
+                False if config.exclude_latest is None else config.exclude_latest
+            ),
             frequency_windows=config.frequency_windows,
             frequency_window_weights=config.frequency_window_weights,
             omission_cap=config.omission_cap,
@@ -846,7 +855,9 @@ def _effective_config(
             frequency_weight=config.frequency_weight,
             omission_weight=config.omission_weight,
             random_weight=config.random_weight,
-            exclude_latest=config.exclude_latest,
+            exclude_latest=(
+                True if config.exclude_latest is None else config.exclude_latest
+            ),
             frequency_windows=config.frequency_windows,
             frequency_window_weights=config.frequency_window_weights,
             omission_cap=config.omission_cap,
@@ -1559,7 +1570,8 @@ def _order_three_digit_candidates_by_shape_probability(
     """按形态概率重排三位数字彩候选。
 
     组三理论概率只有 27%，用户查看前 5 注时不能被高分组三挤占。
-    因此前缀按“4 注组六/其他 + 1 注组三”的节奏输出，豹子仍由过滤器默认排除。
+    因此前缀按“4 注组六/其他 + 1 注组三”的节奏输出；豹子归入其他组，
+    默认保留在完整评分空间中。
     """
 
     if config.allowed_shapes is not None and "组六" not in config.allowed_shapes:
@@ -1709,6 +1721,8 @@ def generate_digit_candidates(
     if rule.category != "digit":
         raise ValueError(f"数字彩候选生成不适用于玩法：{rule.display_name}")
     config = _effective_config(rule, config or DigitCandidateConfig())
+    if config.ranking_mode in {"probability", "online_probability"}:
+        raise ValueError("概率模式必须使用对应的 probability plan 生成候选")
     _ = seed
     ranked = _scored_candidate_pool(stats, rule, config, external_scores)
     model_candidates = _build_model_candidate_lists(
@@ -1967,6 +1981,8 @@ def rank_digit_numbers_with_eligible_count(
     """
 
     effective = _effective_config(rule, config or DigitCandidateConfig())
+    if effective.ranking_mode == "probability":
+        raise ValueError("probability 模式必须使用概率分布自身计算目标排名")
     target_numbers = [int(number) for number in numbers]
     target_text = _candidate_text(target_numbers)
     latest_text = (

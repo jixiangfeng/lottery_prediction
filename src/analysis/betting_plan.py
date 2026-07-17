@@ -21,7 +21,11 @@ class BetCost:
     risk_level: str
 
     def to_dict(self) -> dict[str, Any]:
-        return {"betCount": self.bet_count, "cost": self.cost, "riskLevel": self.risk_level}
+        return {
+            "betCount": self.bet_count,
+            "cost": self.cost,
+            "riskLevel": self.risk_level,
+        }
 
 
 @dataclass(frozen=True)
@@ -67,7 +71,9 @@ class BettingPlan:
     defensive_numbers: list[int]
     budgets: list[int]
     plans: list[BettingPlanItem]
-    disclaimer: str = "复式/胆拖只是在成本可控前提下扩大覆盖，不保证中奖，不建议追损或倍投。"
+    disclaimer: str = (
+        "复式/胆拖只是在成本可控前提下扩大覆盖，不保证中奖，不建议追损或倍投。"
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -90,113 +96,24 @@ def _risk_level(cost: int) -> str:
     return "高"
 
 
-def kl8_select10_compound_cost(number_count: int, *, ticket_price: int = 2) -> BetCost:
-    """快乐8选十 n 码复式成本。"""
-
-    if number_count < 10:
-        raise ValueError("快乐8选十复式至少需要 10 个号码")
-    bet_count = math.comb(number_count, 10)
-    cost = bet_count * ticket_price
-    return BetCost(bet_count=bet_count, cost=cost, risk_level=_risk_level(cost))
-
-
-def _rank_numbers_from_groups(groups: Sequence[Any]) -> list[int]:
-    frequency: Counter[int] = Counter()
-    weighted: dict[int, float] = {}
-    for group in groups:
-        numbers = [int(number) for number in group.numbers]
-        score = float(getattr(group, "score", 1.0) or 1.0)
-        for number in numbers:
-            frequency[number] += 1
-            weighted[number] = weighted.get(number, 0.0) + score
-    return [number for number, _ in sorted(frequency.items(), key=lambda item: (-item[1], -weighted[item[0]], item[0]))]
-
-
-def build_kl8_betting_plan(
-    groups: Sequence[Any],
-    *,
-    budgets: Sequence[int] = (20, 50, 150, 300),
-    ticket_price: int = 2,
-) -> BettingPlan:
-    """从快乐8候选组选出单式、复式、胆拖结构建议。"""
-
-    ranked = _rank_numbers_from_groups(groups)
-    core = ranked[:8]
-    assist = ranked[8:18]
-    defensive = ranked[18:28]
-    plans: list[BettingPlanItem] = []
-    for budget in budgets:
-        affordable_groups = max(1, min(len(groups), budget // ticket_price))
-        plans.append(
-            BettingPlanItem(
-                kind="单式",
-                title=f"{budget}元内单式分散",
-                numbers=None,
-                number_count=10,
-                bet_count=affordable_groups,
-                cost=affordable_groups * ticket_price,
-                risk_level=_risk_level(affordable_groups * ticket_price),
-                note=f"优先取前 {affordable_groups} 组系统候选，适合小额分散。",
-            )
-        )
-        for number_count in (11, 12, 13):
-            cost = kl8_select10_compound_cost(number_count, ticket_price=ticket_price)
-            if cost.cost <= budget:
-                pool = (core + assist + defensive)[:number_count]
-                plans.append(
-                    BettingPlanItem(
-                        kind="复式",
-                        title=f"选十{number_count}码复式",
-                        numbers=pool,
-                        number_count=number_count,
-                        bet_count=cost.bet_count,
-                        cost=cost.cost,
-                        risk_level=cost.risk_level,
-                        note="成本随号码数快速上升，建议只在预算内偶尔使用。",
-                    )
-                )
-    # 胆拖结构按 4 胆 + 10 拖展示；不同投注平台计注规则可能不同，因此不自动给精确成本。
-    if core and assist:
-        plans.append(
-            BettingPlanItem(
-                kind="胆拖",
-                title="选十胆拖结构参考",
-                banker_numbers=core[:4],
-                drag_numbers=(core[4:] + assist)[:10],
-                bet_count=0,
-                cost=0,
-                risk_level="中",
-                note="用于结构参考；下单前需按具体投注平台胆拖计注规则复核成本。",
-            )
-        )
-    # 去重：同预算可能产生重复复式，只保留 kind/title/numbers 相同的第一条。
-    unique: list[BettingPlanItem] = []
-    seen: set[tuple[Any, ...]] = set()
-    for item in plans:
-        key = (item.kind, item.title, tuple(item.numbers or []), tuple(item.banker_numbers or []), tuple(item.drag_numbers or []))
-        if key not in seen:
-            seen.add(key)
-            unique.append(item)
-    return BettingPlan(
-        play="kl8_select10",
-        display_name="快乐8选十",
-        core_numbers=core,
-        assist_numbers=assist,
-        defensive_numbers=defensive,
-        budgets=list(budgets),
-        plans=unique,
-    )
-
-
-def _position_pools(candidates: Sequence[Any], width: int | None = None) -> dict[str, list[int]]:
+def _position_pools(
+    candidates: Sequence[Any], width: int | None = None
+) -> dict[str, list[int]]:
     if not candidates:
         return {}
     draw_count = len(candidates[0].numbers)
     limit = width or (4 if draw_count == 3 else 3)
     pools: dict[str, list[int]] = {}
     for index in range(draw_count):
-        counter: Counter[int] = Counter(int(candidate.numbers[index]) for candidate in candidates)
-        pools[f"pos{index + 1}"] = [digit for digit, _ in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]]
+        counter: Counter[int] = Counter(
+            int(candidate.numbers[index]) for candidate in candidates
+        )
+        pools[f"pos{index + 1}"] = [
+            digit
+            for digit, _ in sorted(
+                counter.items(), key=lambda item: (-item[1], item[0])
+            )[:limit]
+        ]
     return pools
 
 
@@ -213,10 +130,17 @@ def _group_compound_pool(candidates: Sequence[Any], limit: int = 6) -> list[int]
     for candidate in candidates:
         for digit in set(int(number) for number in candidate.numbers):
             counter[digit] += 1
-    return [digit for digit, _ in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]]
+    return [
+        digit
+        for digit, _ in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[
+            :limit
+        ]
+    ]
 
 
-def build_digit_betting_plan(candidate_result: Any, *, ticket_price: int = 2) -> BettingPlan:
+def build_digit_betting_plan(
+    candidate_result: Any, *, ticket_price: int = 2
+) -> BettingPlan:
     """从数字彩候选生成直选/组选/定位复式建议。"""
 
     candidates = list(candidate_result.candidates)
@@ -285,16 +209,27 @@ def build_betting_plan_markdown(plan: BettingPlan) -> str:
     ]
     if plan.defensive_numbers:
         lines.append(f"- 防守池：`{_format_numbers(plan.defensive_numbers)}`")
-    lines.extend(["", "| 类型 | 标题 | 号码/位置池 | 注数 | 成本 | 风险 | 说明 |", "|---|---|---|---:|---:|---|---|"])
+    lines.extend(
+        [
+            "",
+            "| 类型 | 标题 | 号码/位置池 | 注数 | 成本 | 风险 | 说明 |",
+            "|---|---|---|---:|---:|---|---|",
+        ]
+    )
     for item in plan.plans:
         if item.position_pools:
-            pool_text = "；".join(f"{pos}:{','.join(str(d) for d in digits)}" for pos, digits in item.position_pools.items())
+            pool_text = "；".join(
+                f"{pos}:{','.join(str(d) for d in digits)}"
+                for pos, digits in item.position_pools.items()
+            )
         elif item.banker_numbers or item.drag_numbers:
             pool_text = f"胆:{_format_numbers(item.banker_numbers)}；拖:{_format_numbers(item.drag_numbers)}"
         else:
             pool_text = _format_numbers(item.numbers)
         cost = f"{item.cost}元" if item.cost else "需复核"
         bets = str(item.bet_count) if item.bet_count else "--"
-        lines.append(f"| {item.kind} | {item.title} | `{pool_text}` | {bets} | {cost} | {item.risk_level} | {item.note} |")
+        lines.append(
+            f"| {item.kind} | {item.title} | `{pool_text}` | {bets} | {cost} | {item.risk_level} | {item.note} |"
+        )
     lines.extend(["", f"说明：{plan.disclaimer}", ""])
     return "\n".join(lines)

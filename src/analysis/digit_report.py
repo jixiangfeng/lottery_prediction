@@ -40,12 +40,24 @@ from src.analysis.digit_pick_tracking import (
     process_digit_pick_evaluations,
     save_digit_pick_snapshot,
 )
+from src.analysis.digit_probability import (
+    DigitProbabilityConfig,
+    DigitProbabilityPlan,
+    build_digit_probability_plan,
+)
+from src.analysis.digit_probability_online import (
+    DigitOnlineProbabilityConfig,
+    DigitOnlineProbabilityPlan,
+    build_digit_online_probability_plan,
+)
 from src.analysis.digit_statistics import DigitStatisticsResult, analyze_digit_history
 from src.analysis.digit_statistics_snapshot import (
     DigitStatisticsUpdateMetadata,
     analyze_digit_history_with_snapshot,
 )
 from src.lotteries import get_lottery_rule
+
+PROBABILITY_RANKING_MODES = {"probability", "online_probability"}
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -82,7 +94,12 @@ def build_digit_report_markdown(
     candidates: DigitCandidateResult | None = None,
     backtest_markdown: str | None = None,
     betting_plan: BettingPlan | None = None,
-    candidate_plan: DigitBettingCandidateResult | None = None,
+    candidate_plan: (
+        DigitBettingCandidateResult
+        | DigitProbabilityPlan
+        | DigitOnlineProbabilityPlan
+        | None
+    ) = None,
     pick_snapshot_path: Path | None = None,
     evaluated_pick_count: int = 0,
     advanced_model_diagnostics: DigitAdvancedModelDiagnostics | None = None,
@@ -211,7 +228,38 @@ def build_digit_report_markdown(
         lines.extend(["", "## 统计候选", ""])
         lines.append("### 直选候选")
         lines.append("")
-        if candidates.config.ranking_mode == "ensemble":
+        if candidates.config.ranking_mode in PROBABILITY_RANKING_MODES:
+            calibration = (
+                candidate_plan.distribution.calibration
+                if isinstance(candidate_plan, DigitProbabilityPlan)
+                else None
+            )
+            lines.append(
+                "以下候选来自完整 000-999 归一化分布，并直接选择概率 TopK，"
+                "不使用形态配额或多样性替换。"
+            )
+            if calibration is not None:
+                lines.append(
+                    f"校准闸门：`{'通过' if calibration.passed else '回退均匀分布'}`；"
+                    f"学习分布权重 `{calibration.applied_learned_weight:.2f}`；"
+                    f"模型 `{calibration.selected_model}`；验证期 `{calibration.validation_periods}`。"
+                )
+                if calibration.applied_learned_weight == 0.0:
+                    lines.append(
+                        "当前全部直选号码等概率，以下列表仅按源期哈希确定性打破并列，不代表相对概率更高。"
+                    )
+            if isinstance(candidate_plan, DigitOnlineProbabilityPlan):
+                uniform_weight = candidate_plan.state.weights["uniform"]
+                lines.append(
+                    "在线训练：历史第101期起严格执行先预测、后开奖、再更新；"
+                    f"本次状态 `{candidate_plan.state_update.mode}`，新增反馈 "
+                    f"`{candidate_plan.state_update.feedback_updates}` 期，累计反馈 "
+                    f"`{candidate_plan.state.feedback_periods}` 期。"
+                )
+                lines.append(
+                    f"当前均匀基线权重 `{uniform_weight:.2%}`；候选使用最新已开奖期更新后的权重预测下一期。"
+                )
+        elif candidates.config.ranking_mode == "ensemble":
             active_names = (
                 advanced_model_diagnostics.active_model_names
                 if advanced_model_diagnostics is not None
@@ -228,7 +276,12 @@ def build_digit_report_markdown(
             )
         lines.append("")
         for index, candidate in enumerate(candidates.candidates, 1):
-            if candidates.config.ranking_mode == "ensemble":
+            if candidates.config.ranking_mode in PROBABILITY_RANKING_MODES:
+                lines.append(
+                    f"{index}. `{candidate.text}` - 和值 {candidate.sum_value}，跨度 {candidate.span}，"
+                    f"形态 {candidate.shape}，预测分布概率 {float(candidate.predicted_probability or 0.0):.6%}"
+                )
+            elif candidates.config.ranking_mode == "ensemble":
                 lines.append(
                     f"{index}. `{candidate.text}` - 和值 {candidate.sum_value}，跨度 {candidate.span}，"
                     f"形态 {candidate.shape}，集成分 {candidate.ensemble_score:.4f}，"
@@ -240,7 +293,12 @@ def build_digit_report_markdown(
                     f"形态 {candidate.shape}，评分 {candidate.score:.4f}"
                 )
         if candidate_plan is not None and candidate_plan.group_candidates:
-            if candidates.config.ranking_mode == "ensemble":
+            if candidates.config.ranking_mode in PROBABILITY_RANKING_MODES:
+                lines.extend(["", "### 组选候选（排列概率精确求和）", ""])
+                lines.append(
+                    "组选概率等于该数字集合全部有序排列的直选概率之和；不使用组三/组六固定配额。"
+                )
+            elif candidates.config.ranking_mode == "ensemble":
                 lines.extend(["", "### 组选候选（形态内独立集成排名）", ""])
                 lines.append(
                     "组三与组六分别对无序数字集合重新计算模型分位，不直接复用直选排名；该分数不是开奖概率。"
@@ -252,7 +310,13 @@ def build_digit_report_markdown(
                 )
             lines.append("")
             for index, group_candidate in enumerate(candidate_plan.group_candidates, 1):
-                if candidates.config.ranking_mode == "ensemble":
+                if candidates.config.ranking_mode in PROBABILITY_RANKING_MODES:
+                    lines.append(
+                        f"{index}. `{group_candidate.group_key}` - 形态 {group_candidate.shape}，"
+                        f"排列概率和 {float(group_candidate.predicted_probability or 0.0):.6%}，"
+                        f"排列数 {group_candidate.permutations}"
+                    )
+                elif candidates.config.ranking_mode == "ensemble":
                     lines.append(
                         f"{index}. `{group_candidate.group_key}` - 形态 {group_candidate.shape}，"
                         f"形态内集成分 {group_candidate.ensemble_score:.4f}，"
@@ -301,6 +365,15 @@ def build_digit_report_markdown(
         )
 
     if pick_snapshot_path is not None:
+        if candidates is not None and candidates.config.ranking_mode == "probability":
+            tracking_rule = "- 概率 v2 只有校准选参段、独立守门段和三个时间块全部改善时才启用学习分布。"
+        elif (
+            candidates is not None
+            and candidates.config.ranking_mode == "online_probability"
+        ):
+            tracking_rule = "- 在线概率严格按逐期开奖反馈更新；当前500期开发闸门未通过，不解释为已建立预测优势。"
+        else:
+            tracking_rule = "- 逐模型至少积累 100 期且单侧 p<0.01 后才允许正向调权，单模型浮动不超过 10%。"
         lines.extend(
             [
                 "",
@@ -308,7 +381,7 @@ def build_digit_report_markdown(
                 "",
                 f"- 本期推荐快照：`{pick_snapshot_path}`",
                 f"- 已自动复盘历史快照：`{evaluated_pick_count}` 期",
-                "- 逐模型表现满 5 期后会以基础权重为中心保守调权，单模型浮动不超过 20%。",
+                tracking_rule,
                 "- 新快照将在源期之后的第一期开奖数据出现时自动复盘。",
             ]
         )
@@ -332,7 +405,12 @@ def build_digit_report_data(
     *,
     markdown_path: Path | None = None,
     betting_plan: BettingPlan | None = None,
-    candidate_plan: DigitBettingCandidateResult | None = None,
+    candidate_plan: (
+        DigitBettingCandidateResult
+        | DigitProbabilityPlan
+        | DigitOnlineProbabilityPlan
+        | None
+    ) = None,
     pick_snapshot_path: Path | None = None,
     live_summary_path: Path | None = None,
     advanced_model_diagnostics: DigitAdvancedModelDiagnostics | None = None,
@@ -387,6 +465,30 @@ def build_digit_report_data(
             if advanced_model_diagnostics is not None
             else None
         ),
+        "probabilityCalibration": (
+            candidate_plan.distribution.calibration.to_dict()
+            if isinstance(candidate_plan, DigitProbabilityPlan)
+            else None
+        ),
+        "onlineProbability": (
+            candidate_plan.to_dict()["onlineProbability"]
+            if isinstance(candidate_plan, DigitOnlineProbabilityPlan)
+            else None
+        ),
+        "probabilityDistributionFingerprint": (
+            candidate_plan.distribution.fingerprint
+            if isinstance(
+                candidate_plan, (DigitProbabilityPlan, DigitOnlineProbabilityPlan)
+            )
+            else None
+        ),
+        "probabilitySum": (
+            candidate_plan.distribution.probability_sum
+            if isinstance(
+                candidate_plan, (DigitProbabilityPlan, DigitOnlineProbabilityPlan)
+            )
+            else None
+        ),
         "backtest": backtest.to_dict(),
         "hindsightBacktest": {
             "enabled": hindsight_backtest_enabled,
@@ -431,6 +533,17 @@ def generate_digit_report_from_csv(
     rebuild_stats: bool = False,
     incremental_stats: bool = True,
     enable_hindsight_backtest: bool = False,
+    freeze_pick_snapshot: bool = False,
+    probability_validation_periods: int = 180,
+    probability_min_train_size: int = 100,
+    probability_minimum_validation_periods: int = 90,
+    online_probability_min_train_size: int = 100,
+    online_probability_temperature: float = 0.2,
+    online_probability_uniform_prior_weight: float = 0.5,
+    online_probability_learning_rate: float = 1.0,
+    online_probability_fixed_share: float = 0.01,
+    online_probability_state_path: str | Path | None = None,
+    rebuild_online_probability_state: bool = False,
 ) -> Path:
     """从数字彩 CSV 生成 Markdown 分析报告。"""
 
@@ -446,16 +559,22 @@ def generate_digit_report_from_csv(
     configured_candidate = DigitCandidateConfig(
         count=candidate_count,
         ranking_mode=ranking_mode,
-        constraint_mode=constraint_mode,
+        constraint_mode=(
+            "off" if ranking_mode in PROBABILITY_RANKING_MODES else constraint_mode
+        ),
         constraint_probability_floor=constraint_probability_floor,
         constraint_penalty_weight=constraint_penalty_weight,
     )
     base_config = with_all_history_window(configured_candidate, len(df))
-    candidate_config = replace(
-        base_config,
-        ensemble_model_weights=derive_live_ensemble_weights(
-            evaluations, base_config.ensemble_model_weights
-        ),
+    candidate_config = (
+        base_config
+        if ranking_mode in PROBABILITY_RANKING_MODES
+        else replace(
+            base_config,
+            ensemble_model_weights=derive_live_ensemble_weights(
+                evaluations, base_config.ensemble_model_weights
+            ),
+        )
     )
     statistics_update: DigitStatisticsUpdateMetadata | dict[str, object]
     if incremental_stats:
@@ -489,25 +608,65 @@ def generate_digit_report_from_csv(
             "persisted": False,
             "snapshotWritten": False,
         }
-    external_scores, advanced_model_diagnostics = build_advanced_model_scores(
-        df,
-        stats,
-        rule,
-        candidate_config,
-        enable_monte_carlo=enable_monte_carlo,
-        monte_carlo_simulations=monte_carlo_simulations,
-        enable_ml=enable_ml,
-        ml_training_periods=ml_training_periods,
-        ml_negative_samples=ml_negative_samples,
-        seed=int(stats.latest_issue),
+    candidate_plan: (
+        DigitBettingCandidateResult | DigitProbabilityPlan | DigitOnlineProbabilityPlan
     )
-    candidate_plan = generate_digit_betting_candidates(
-        stats,
-        rule,
-        config=candidate_config,
-        group_count=candidate_count,
-        external_scores=external_scores,
-    )
+    advanced_model_diagnostics: DigitAdvancedModelDiagnostics | None
+    if ranking_mode == "probability":
+        candidate_plan = build_digit_probability_plan(
+            df,
+            rule,
+            candidate_count=candidate_count,
+            candidate_config=configured_candidate,
+            probability_config=DigitProbabilityConfig(
+                validation_periods=probability_validation_periods,
+                min_train_size=probability_min_train_size,
+                minimum_validation_periods=probability_minimum_validation_periods,
+            ),
+            stats=stats,
+        )
+        advanced_model_diagnostics = None
+    elif ranking_mode == "online_probability":
+        effective_online_state_path = (
+            Path(online_probability_state_path)
+            if online_probability_state_path is not None
+            else report_dir / "state" / f"{rule.code}_online_probability_v3_state.json"
+        )
+        candidate_plan = build_digit_online_probability_plan(
+            df,
+            rule,
+            candidate_count=candidate_count,
+            online_config=DigitOnlineProbabilityConfig(
+                min_train_size=online_probability_min_train_size,
+                temperature=online_probability_temperature,
+                uniform_prior_weight=online_probability_uniform_prior_weight,
+                learning_rate=online_probability_learning_rate,
+                fixed_share=online_probability_fixed_share,
+            ),
+            state_path=effective_online_state_path,
+            rebuild_state=rebuild_online_probability_state,
+        )
+        advanced_model_diagnostics = None
+    else:
+        external_scores, advanced_model_diagnostics = build_advanced_model_scores(
+            df,
+            stats,
+            rule,
+            candidate_config,
+            enable_monte_carlo=enable_monte_carlo,
+            monte_carlo_simulations=monte_carlo_simulations,
+            enable_ml=enable_ml,
+            ml_training_periods=ml_training_periods,
+            ml_negative_samples=ml_negative_samples,
+            seed=int(stats.latest_issue),
+        )
+        candidate_plan = generate_digit_betting_candidates(
+            stats,
+            rule,
+            config=candidate_config,
+            group_count=candidate_count,
+            external_scores=external_scores,
+        )
     candidates = DigitCandidateResult(
         candidate_plan.rule_code,
         candidate_plan.display_name,
@@ -537,6 +696,16 @@ def generate_digit_report_from_csv(
         stats,
         candidate_plan,
         report_dir / "picks" / "digit",
+        immutable=freeze_pick_snapshot,
+        experiment_id=(
+            "probability_v2"
+            if ranking_mode == "probability"
+            else (
+                "probability_online_v3"
+                if ranking_mode == "online_probability"
+                else None
+            )
+        ),
     )
     output_path = report_dir / f"{rule.code}_daily_{stats.latest_issue}.md"
     _atomic_write_text(
@@ -617,8 +786,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--ranking-mode",
         default="ensemble",
-        choices=("ensemble", "composite"),
-        help="候选排序模式，默认使用多模型集成投票",
+        choices=("ensemble", "composite", "probability", "online_probability"),
+        help="候选排序模式；online_probability 为逐期开奖反馈概率 v3",
     )
     parser.add_argument(
         "--constraint-mode",
@@ -657,6 +826,68 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="显式启用把当前候选回放全部历史的旧诊断口径",
     )
+    parser.add_argument(
+        "--freeze-pick",
+        action="store_true",
+        help="将本期推荐快照冻结为不可覆盖的开奖前实验记录",
+    )
+    parser.add_argument(
+        "--probability-validation-periods",
+        type=int,
+        default=180,
+        help="概率 v2 的严格历史校准期数",
+    )
+    parser.add_argument(
+        "--probability-min-train-size",
+        type=int,
+        default=100,
+        help="概率 v2 每个校准目标的最少训练期数",
+    )
+    parser.add_argument(
+        "--probability-minimum-validation-periods",
+        type=int,
+        default=90,
+        help="概率 v2 允许启用学习分布的最少验证期数",
+    )
+    parser.add_argument(
+        "--online-probability-min-train-size",
+        type=int,
+        default=100,
+        help="在线概率开始逐期开奖反馈前的历史期数",
+    )
+    parser.add_argument(
+        "--online-probability-temperature",
+        type=float,
+        default=0.2,
+        help="在线概率统计专家的固定温度",
+    )
+    parser.add_argument(
+        "--online-probability-uniform-prior-weight",
+        type=float,
+        default=0.5,
+        help="在线概率均匀基线初始权重",
+    )
+    parser.add_argument(
+        "--online-probability-learning-rate",
+        type=float,
+        default=1.0,
+        help="在线概率开奖后权重更新学习率",
+    )
+    parser.add_argument(
+        "--online-probability-fixed-share",
+        type=float,
+        default=0.01,
+        help="在线概率每期向初始先验收缩的比例",
+    )
+    parser.add_argument(
+        "--online-probability-state-path",
+        help="在线概率增量状态路径；默认位于 output-dir/state",
+    )
+    parser.add_argument(
+        "--rebuild-online-probability-state",
+        action="store_true",
+        help="忽略已有在线概率状态并按全部历史重放",
+    )
     args = parser.parse_args(argv)
 
     output = generate_digit_report_from_csv(
@@ -679,6 +910,17 @@ def main(argv: list[str] | None = None) -> int:
         rebuild_stats=args.rebuild_stats,
         incremental_stats=not args.no_incremental_stats,
         enable_hindsight_backtest=args.hindsight_backtest,
+        freeze_pick_snapshot=args.freeze_pick,
+        probability_validation_periods=args.probability_validation_periods,
+        probability_min_train_size=args.probability_min_train_size,
+        probability_minimum_validation_periods=args.probability_minimum_validation_periods,
+        online_probability_min_train_size=args.online_probability_min_train_size,
+        online_probability_temperature=args.online_probability_temperature,
+        online_probability_uniform_prior_weight=args.online_probability_uniform_prior_weight,
+        online_probability_learning_rate=args.online_probability_learning_rate,
+        online_probability_fixed_share=args.online_probability_fixed_share,
+        online_probability_state_path=args.online_probability_state_path,
+        rebuild_online_probability_state=args.rebuild_online_probability_state,
     )
     print(output)
     return 0

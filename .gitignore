@@ -2,8 +2,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-kl8_runnint_results.txt
-
 # C extensions
 *.so
 
@@ -134,27 +132,17 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# KL8 specific
+# 运行数据与报告缓存
 data/*
 results/
 logs/
 *.csv
 *.json
+reports/state/*.lock
+reports/**/state/*.lock
 models/
 cache/
 temp/
-!data/kl8/
-data/kl8/*
-!data/kl8/data.csv
-!data/kl8/download_meta.json
-
-# Vue3 H5
-h5/node_modules/
-h5/dist/
-h5/public/report-data/
-!h5/package.json
-!h5/package-lock.json
-!h5/tsconfig.json
 
 # IDE
 .vscode/

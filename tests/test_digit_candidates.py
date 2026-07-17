@@ -53,7 +53,7 @@ def test_generate_digit_candidates_for_fc3d_respects_filters_and_shape():
         assert len(candidate.text) == 3
 
 
-def test_default_fc3d_candidates_exclude_latest_and_baozi():
+def test_default_fc3d_scoring_keeps_all_one_thousand_legal_numbers():
     rule = get_lottery_rule("fc3d")
     df = pd.DataFrame(
         [
@@ -64,22 +64,35 @@ def test_default_fc3d_candidates_exclude_latest_and_baozi():
     )
     stats = analyze_digit_history(df, rule)
 
-    result = generate_digit_candidates(
-        stats, rule, config=DigitCandidateConfig(count=8), seed=11
+    effective = _effective_config(rule, DigitCandidateConfig(count=8))
+    ranked = _enumerate_scored_candidates(stats, rule, effective, None)
+
+    assert effective.sum_min is None and effective.sum_max is None
+    assert effective.span_min is None and effective.span_max is None
+    assert effective.allowed_shapes is None
+    assert effective.exclude_latest is False
+    assert len(ranked) == 1000
+    assert {"000", "818", "999"} <= {candidate.text for candidate in ranked}
+
+
+def test_three_digit_explicit_hard_filters_remain_available():
+    rule = get_lottery_rule("fc3d")
+    effective = _effective_config(
+        rule,
+        DigitCandidateConfig(
+            sum_min=6,
+            sum_max=21,
+            span_min=1,
+            span_max=9,
+            allowed_shapes=("组六", "组三"),
+            exclude_latest=True,
+        ),
     )
 
-    assert all(candidate.text != "818" for candidate in result.candidates)
-    assert all(candidate.shape != "豹子" for candidate in result.candidates)
-    assert sum(1 for candidate in result.candidates if candidate.shape == "组三") <= 3
-    assert (
-        sum(1 for candidate in result.candidates[:5] if candidate.shape == "组三") <= 1
-    )
-    assert all(6 <= candidate.sum_value <= 21 for candidate in result.candidates)
-    assert all(
-        (candidate.span >= 1 if candidate.shape == "组三" else candidate.span >= 2)
-        and candidate.span <= 9
-        for candidate in result.candidates
-    )
+    assert effective.sum_min == 6 and effective.sum_max == 21
+    assert effective.span_min == 1 and effective.span_max == 9
+    assert effective.allowed_shapes == ("组六", "组三")
+    assert effective.exclude_latest is True
 
 
 def test_default_fc3d_profile_uses_conservative_group_model_weights():
@@ -450,12 +463,12 @@ def test_three_digit_statistical_and_random_candidates_share_exact_shape_budget(
         assert len(plan.direct_candidates) == count
         assert len(plan.group_candidates) == count
         assert (
-            sum(candidate.shape == "组六" for candidate in plan.direct_candidates)
-            == expected_group6
-        )
-        assert (
             sum(candidate.shape == "组三" for candidate in plan.direct_candidates)
             == expected_group3
+        )
+        assert (
+            sum(candidate.shape != "组三" for candidate in plan.direct_candidates)
+            == expected_group6
         )
         assert (
             sum(candidate.shape == "组六" for candidate in plan.group_candidates)

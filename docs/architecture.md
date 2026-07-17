@@ -1,126 +1,58 @@
-# KL8 彩票分析器架构总览（🔥 多线程优化版本）
+# 数字彩分析架构
 
-```mermaid
+## 总览
+
+~~~mermaid
 flowchart LR
-    subgraph CLI
-        A[scripts/get_data.py]
-        B[src/analysis/*.py]
-        C[examples/analysis_example.py]
-        D[🚀 kl8_analysis_plus.py]
-        E[🚀 kl8_cash_plus.py]
-    end
+    OFFICIAL[显式官方历史抓取] --> CSV[本地 CSV]
+    CSV[本地 CSV] --> NORMALIZE[数字彩数据标准化]
+    NORMALIZE --> SNAPSHOT[增量统计快照]
+    SNAPSHOT --> STATS[多窗口统计与理论基线]
+    STATS --> ADVANCED[蒙特卡洛与逻辑回归票]
+    STATS --> CANDIDATES[完整空间候选评分]
+    ADVANCED --> CANDIDATES
+    CANDIDATES --> REPORT[Markdown / JSON 日报]
+    CANDIDATES --> PICKS[开奖前推荐快照]
+    PICKS --> REVIEW[后续开奖复盘与模型调权]
+    NORMALIZE --> WF[严格逐期前推]
+    WF --> EVAL[随机基线与窗口比较]
+    EVAL --> GATE[直选/组选统计可行性闸门]
+    STATS --> PROB[完整空间概率 v2]
+    PROB --> CAL[选参段 / 独立守门段]
+    CAL -->|通过| TOPK[直选纯 TopK / 组选排列求和]
+    CAL -->|失败| UNIFORM[均匀分布回退]
+    STATS --> ONLINE[在线概率 v3 专家分布]
+    ONLINE --> MIX[当前权重合并]
+    MIX --> PREDICT[开奖前概率与候选]
+    PREDICT --> FEEDBACK[开奖后 Log Loss 反馈]
+    FEEDBACK --> ONLINE
+~~~
 
-    A --> COM[common.get_data_run]
-    B --> COM
-    C --> COM
-    D --> COM
-    E --> COM
+## 模块边界
 
-    subgraph "优化并发架构"
-        COM --> DOWNLOAD[单线程数据下载]
-        DOWNLOAD --> THREAD_POOL[ThreadPoolExecutor<br/>线程池]
-        THREAD_POOL --> WORKER1[工作线程1]
-        THREAD_POOL --> WORKER2[工作线程2]
-        THREAD_POOL --> WORKERN[工作线程N]
-        
-        WORKER1 --> SHARED[共享资源<br/>threading.Lock]
-        WORKER2 --> SHARED
-        WORKERN --> SHARED
-    end
+- src/lotteries：福彩3D、排列三、排列五规则和号码校验。
+- digit_data：CSV 列识别、拆位、范围校验、数值期号排序。
+- digit_history_fetcher：固定福彩官网/中彩网白名单的显式抓取、校验和原子 CSV 写入。
+- digit_statistics：经验统计、贝叶斯平滑和精确理论概率。
+- digit_statistics_snapshot：首次全量、缓存命中、纯追加和原子持久化。
+- digit_candidates：完整号码空间评分、集成分位和多样性选择。
+- digit_advanced_models：蒙特卡洛与逻辑回归票的统一入口。
+- digit_report：日报、投注结构、推荐留痕和结构化 JSON。
+- digit_walk_forward：无未来数据污染的逐期训练与随机基线比较。
+- prediction_viability：精确随机右尾概率、置信下界、分块稳定性和最终可行性判定。
+- digit_pick_tracking：开奖前留痕、实盘复盘及相对同候选随机基线的保守调权。
+- digit_probability：三位彩完整概率空间、模型剖面消融、Log Loss校准、均匀回退和纯TopK选择。
+- digit_probability_walk_forward：冻结一次校准后逐期计算Log Loss、Brier、排名与命中闸门。
+- digit_probability_online：固定更新规则，逐期合并专家概率、开奖后更新权重并输出完整反馈证据。
+- digit_report online_probability：日报消费在线状态，新增开奖后更新状态并生成下一期概率快照；状态指纹失配时全量重建。
 
-    COM --> DF[data_fetcher]
-    DF --> HTTP[LotteryHttpClient<br/>500.com / 917500]
-    COM --> CFG[config]
-    DF --> CFG
+## 关键约束
 
-    CFG --> PATHS[(PATHS & 网络配置)]
-```
-
-## 模块说明
-
-### 核心模块
-- **CLI 与脚本层**：包含下载脚本、分析脚本与示例；通过 `src.common` 统一访问内部能力。
-- **`src.common`**：提供数据下载与期号查询的高层接口，同时复用 `data_fetcher` 和 `config`。
-- **`src.data_fetcher`**：负责 HTTP 请求、HTML/文本解析以及 CSV 写入，仅支持快乐 8。
-- **`src.config`**：集中维护路径、网络超时及彩票配置；`ensure_runtime_directories` 用于初始化运行目录。
-
-### 🚀 多线程优化模块（Plus版本）
-- **`kl8_analysis_plus.py`**：优化多线程号码生成器
-  - **单线程数据下载**：避免重复网络请求
-  - **ThreadPoolExecutor架构**：替代多进程，消除全局变量冲突
-  - **线程安全机制**：使用threading.Lock保护共享资源
-  - **智能负载均衡**：动态分配工作线程，提升处理效率
-
-- **`kl8_cash_plus.py`**：优化多线程收益分析器
-  - **批量文件处理**：并发分析多个预测文件
-  - **内存优化**：局部变量替代全局状态，减少内存占用
-  - **错误隔离**：单个文件失败不影响整体流程
-  - **实时进度监控**：动态显示处理状态和统计信息
-
-- **主成分分析（PCA）特征增强**：自动提取历史号码矩阵主成分，提升全局特征表达能力
-
-## 数据流
-
-### 传统单线程数据流
-1. CLI 解析参数后调用 `get_data_run` 或 `load_history`。
-2. `common` 根据配置创建目录并委托 `data_fetcher` 执行网络请求。
-3. `data_fetcher` 使用带重试的 `LotteryHttpClient` 抓取数据，解析后写入 `data/kl8/data.csv`。
-4. 分析脚本读取 CSV 进行概率统计、约束生成和收益回测。
-
-### 🚀 优化多线程数据流（Plus版本）
-1. **启动阶段**：CLI 解析参数，初始化线程池和共享资源
-2. **数据下载阶段**：
-   - 主线程执行单次数据下载，避免重复网络请求
-   - 调用 `download_data_if_needed()` 确保数据可用性
-3. **并行处理阶段**：
-   - ThreadPoolExecutor 创建工作线程池
-   - 每个工作线程处理独立任务（号码生成/文件分析）
-   - 使用 threading.Lock 保护共享资源访问
-4. **结果汇总阶段**：
-   - 线程安全地收集所有工作线程结果
-   - 统一格式化输出和文件写入
-   - 提供详细的处理统计和性能指标
-
-### 性能优势对比
-| 特性 | 传统版本 | Plus优化版本 |
-|------|----------|-------------|
-| 数据下载 | 每个进程都下载 | 主线程单次下载 |
-| 并发模型 | multiprocessing.Process | concurrent.futures.ThreadPoolExecutor |
-| 内存占用 | 多进程高内存 | 线程共享内存 |
-| 全局变量 | 进程间冲突 | 线程安全访问 |
-| 错误隔离 | 进程崩溃影响全局 | 线程失败不影响其他 |
-| 监控能力 | 基础进度显示 | 实时详细统计 |
-# 数字彩闭环数据流
-
-```mermaid
-flowchart LR
-    H[目标期之前历史] --> S[多窗口边际/位置对/结构/遗漏]
-    S --> P[共享三位前缀复合模型评分]
-    S --> V[14 统计子模型独立排名分位]
-    H --> M[边际+位置对条件+形态联合蒙特卡洛]
-    H --> ML[时间严格候选二分类排序]
-    M --> V
-    ML --> V
-    V --> E[ensemble_voting]
-    P --> D[直选高质量池]
-    E --> D
-    S --> Q[奇偶/大小/质合软硬约束]
-    Q --> D
-    P --> G[三位彩无序 key 证据聚合]
-    V --> GS[组三/组六形态内重排]
-    G --> GS
-    GS --> O
-    D --> O[外层目标期评估]
-    H --> I[内层尾部验证]
-    I --> C[固定三配置选择]
-    C --> D
-    R[多种子 uniform_random] --> O
-    H --> W[30/50/100/300/全历史独立窗口]
-    W --> O
-    D --> K[最终候选+各子模型 TopK 快照]
-    K --> L[下一期开奖逐模型自动复盘]
-    L --> AW[有样本门槛且±20% 封顶调权]
-    AW --> V
-```
-
-外层目标期只用于最终评估，不进入统计、ML 样本特征、候选生成或配置选择。严格前推同时保留旧复合策略、16 投票器集成和随机基线；位置覆盖保留为诊断输出，模型排名分位桶和独立窗口稳定分用于判断历史排序信号是否稳定。
+- 日报快照只服务当前统计，不参与严格前推。
+- 日报和回测不隐式联网，只有 `digit-fetch` 命令允许访问固定来源。
+- 前推每个目标期独立截断历史，禁止读取目标期及其后数据。
+- 文件快照和日报使用同目录临时文件、fsync 与 os.replace。
+- 复合分和集成分只用于排序；只有概率 v2 或 online_probability v3 的归一化 `predictedProbability` 可解释为模型分布概率，且 v3 仍未通过可行性闸门。
+- 三位彩默认完整空间评分；统计闸门失败时报告必须显示不可行。
+- 在线评估允许开奖后更新状态，但更新规则必须预先固定，且本期预测必须在读取本期开奖结果前完成。
+- 在线日报状态只消费已开奖期；推荐快照的稳定指纹不包含 `cache_hit`/`incremental` 等运行元数据，重复运行不得改变推荐。

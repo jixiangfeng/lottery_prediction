@@ -1,8 +1,7 @@
 [run]
-omit =
-    src/analysis/*
-    src/modeling.py
-    src/pipeline.py
+branch = True
+source = src
 
 [report]
 show_missing = True
+fail_under = 80
