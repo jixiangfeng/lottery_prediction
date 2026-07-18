@@ -17,7 +17,6 @@ from src.analysis.digit_learned_ranker import (
     save_params,
 )
 from src.analysis.digit_learned_ranker_search import LearnedSplit
-from src.analysis.digit_report import generate_digit_report_from_csv
 
 
 def _write_csv(path: Path, periods: int = 20) -> None:
@@ -43,6 +42,45 @@ def _snapshot_path(output_dir: Path, issue: str = "2026020") -> Path:
     )
     assert len(matches) == 1
     return matches[0]
+
+
+def test_train_cli_records_explicit_frozen_window_and_objective_profile(
+    tmp_path: Path,
+):
+    csv_path = tmp_path / "fc3d.csv"
+    output_dir = tmp_path / "reports"
+    _write_csv(csv_path, periods=20)
+
+    assert (
+        main(
+            [
+                "train",
+                "--lottery",
+                "fc3d",
+                "--csv",
+                str(csv_path),
+                "--output-dir",
+                str(output_dir),
+                "--frozen-test-periods",
+                "10",
+                "--random-trials",
+                "4",
+                "--local-trials",
+                "0",
+                "--evaluation-stride",
+                "3",
+                "--objective-profile",
+                "direct_focus",
+            ]
+        )
+        == 0
+    )
+
+    params_path = output_dir / "state" / "learned_ranker_v4" / "fc3d_params.json"
+    metadata = json.loads(params_path.read_text(encoding="utf-8"))["metadata"]
+    assert metadata["split"] == {"searchEnd": 5, "validationEnd": 10, "testEnd": 20}
+    assert metadata["objectiveProfile"] == "direct_focus"
+    assert metadata["search"]["objectiveProfile"] == "direct_focus"
 
 
 def test_daily_cli_writes_reproducible_fingerprinted_artifacts(tmp_path: Path):
@@ -304,39 +342,3 @@ def test_different_params_are_isolated_without_overwriting_daily_artifacts(
     assert first_daily_json.read_bytes() == original
     assert first_daily_json.exists() and second_daily_json.exists()
     assert first_snapshot.exists() and second_snapshot.exists()
-
-
-def test_digit_report_learned_mode_routes_to_v4_and_rejects_pl5(tmp_path: Path):
-    csv_path = tmp_path / "fc3d.csv"
-    output_dir = tmp_path / "reports"
-    params_path = tmp_path / "params.json"
-    _write_csv(csv_path)
-    save_params(LearnedRankerParams(), params_path)
-
-    output = generate_digit_report_from_csv(
-        "fc3d",
-        csv_path,
-        output_dir=output_dir,
-        write_json=True,
-        ranking_mode="learned_ranker_v4",
-        learned_ranker_params_path=params_path,
-    )
-    assert output.parent == output_dir / "learned_ranker_v4_daily"
-    assert output.name.startswith("fc3d_learned_ranker_v4_")
-    assert output.name.endswith("_daily_2026020.md")
-    assert "研究模式，不接入主推荐" in output.read_text(encoding="utf-8")
-
-    pl5_path = tmp_path / "pl5.csv"
-    pl5_path.write_text("期号,开奖号码\n1,12345\n", encoding="utf-8")
-    try:
-        generate_digit_report_from_csv(
-            "pl5",
-            pl5_path,
-            output_dir=output_dir,
-            ranking_mode="learned_ranker_v4",
-            learned_ranker_params_path=params_path,
-        )
-    except ValueError as exc:
-        assert "只支持 fc3d/pl3" in str(exc)
-    else:
-        raise AssertionError("pl5 learned_ranker_v4 必须拒绝")

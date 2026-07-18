@@ -40,11 +40,54 @@ FULL_WINDOW_SETS = (
     (30, 50, 100, 300, "all"),
 )
 FULL_GROUP_AGGREGATIONS = ("sum_prob", "max_perm", "mean_top_perm")
+# (log_rank, rank_percentile, direct, group, pool, instability) weights.
+OBJECTIVE_PROFILES: dict[str, tuple[float, float, float, float, float, float]] = {
+    "balanced": (0.35, 0.25, 0.20, 0.15, 0.05, 0.10),
+    "direct_focus": (0.25, 0.15, 0.45, 0.05, 0.10, 0.15),
+    "group_focus": (0.25, 0.15, 0.05, 0.45, 0.10, 0.15),
+    "pool_focus": (0.25, 0.15, 0.10, 0.10, 0.40, 0.20),
+    # 以下只用于 Search/Validation 开发调参，不能据此反复查看 frozen-test。
+    "direct_hit_only": (0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+    "group_hit_only": (0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+    "pool_hit_only": (0.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+}
 WINDOW_WEIGHT_PROFILES = {
-    "balanced": {"10": 1, "20": 1, "30": 1, "50": 1, "100": 1, "300": 1, "all": 1},
-    "recent_heavy": {"10": 6, "20": 5, "30": 4, "50": 3, "100": 2, "300": 1, "all": 1},
-    "medium_heavy": {"10": 1, "20": 2, "30": 3, "50": 4, "100": 4, "300": 2, "all": 1},
-    "long_stable": {"10": 1, "20": 1, "30": 1, "50": 2, "100": 3, "300": 5, "all": 6},
+    "balanced": {
+        "10": 3,
+        "20": 2.5,
+        "30": 2,
+        "50": 1.5,
+        "100": 1,
+        "300": 0.5,
+        "all": 0.25,
+    },
+    "recent_heavy": {
+        "10": 6,
+        "20": 5,
+        "30": 4,
+        "50": 3,
+        "100": 2,
+        "300": 0.5,
+        "all": 0.25,
+    },
+    "medium_heavy": {
+        "10": 1,
+        "20": 2,
+        "30": 3,
+        "50": 4,
+        "100": 4,
+        "300": 1,
+        "all": 0.25,
+    },
+    "long_stable": {
+        "10": 1,
+        "20": 1,
+        "30": 1,
+        "50": 1.5,
+        "100": 2,
+        "300": 2,
+        "all": 0.5,
+    },
 }
 
 
@@ -58,6 +101,9 @@ def build_search_space_manifest(*, smoke: bool) -> dict[str, object]:
         "alpha": list(FULL_ALPHAS),
         "windowSets": [list(values) for values in FULL_WINDOW_SETS],
         "groupAggregation": list(FULL_GROUP_AGGREGATIONS),
+        "objectiveProfiles": {
+            name: list(weights) for name, weights in OBJECTIVE_PROFILES.items()
+        },
         "featureNormalization": "robust_zscore",
         "featureWeightRanges": {
             name: (
@@ -137,12 +183,20 @@ class LearnedSplit:
             raise ValueError("切分边界必须满足 0 <= search <= validation <= test")
 
     @classmethod
-    def from_length(cls, length: int) -> "LearnedSplit":
+    def from_length(
+        cls, length: int, *, frozen_test_periods: int | None = None
+    ) -> "LearnedSplit":
         if length < 4:
             raise ValueError("历史至少需要 4 期才能切分")
-        search_end = max(1, int(length * 0.50))
-        validation_end = max(search_end + 1, int(length * 0.75))
-        return cls(search_end, min(validation_end, length - 1), length)
+        if frozen_test_periods is None:
+            search_end = max(1, int(length * 0.50))
+            validation_end = max(search_end + 1, int(length * 0.75))
+            return cls(search_end, min(validation_end, length - 1), length)
+        if frozen_test_periods <= 0 or frozen_test_periods >= length - 1:
+            raise ValueError("冻结测试期数必须小于历史长度减一")
+        pretest_end = length - frozen_test_periods
+        search_end = max(1, pretest_end // 2)
+        return cls(search_end, pretest_end, length)
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -164,6 +218,7 @@ class LearnedSearchConfig:
     seed: int = 20260717
     feature_config: LearnedFeatureConfig = LearnedFeatureConfig()
     feature_configs: tuple[LearnedFeatureConfig, ...] | None = None
+    objective_profile: str = "balanced"
     smoke: bool = False
 
     def __post_init__(self) -> None:
@@ -173,6 +228,8 @@ class LearnedSearchConfig:
             raise ValueError("随机搜索次数必须为正，局部搜索次数不得为负")
         if self.feature_configs is not None and not self.feature_configs:
             raise ValueError("feature_configs 不得为空")
+        if self.objective_profile not in OBJECTIVE_PROFILES:
+            raise ValueError(f"未知 objective profile：{self.objective_profile}")
 
 
 @dataclass(frozen=True)
@@ -207,6 +264,7 @@ class LearnedSearchResult:
     trials: tuple[LearnedSearchTrial, ...]
     selection_target_indices: tuple[int, ...]
     test_segment_used_for_selection: bool = False
+    objective_profile: str = "balanced"
     search_space_manifest: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -225,6 +283,7 @@ class LearnedSearchResult:
             "trials": [item.to_dict() for item in self.trials],
             "selectionTargetIndices": list(self.selection_target_indices),
             "testSegmentUsedForSelection": self.test_segment_used_for_selection,
+            "objectiveProfile": self.objective_profile,
             "searchSpaceManifest": self.search_space_manifest
             or build_search_space_manifest(smoke=False),
         }
@@ -258,8 +317,13 @@ def _prepare_targets(
 
 
 def _objective(
-    targets: Sequence[_PreparedTarget], params: LearnedRankerParams
+    targets: Sequence[_PreparedTarget],
+    params: LearnedRankerParams,
+    *,
+    objective_profile: str = "balanced",
 ) -> float:
+    if objective_profile not in OBJECTIVE_PROFILES:
+        raise ValueError(f"未知 objective profile：{objective_profile}")
     if not targets:
         return -math.inf
     log_ranks = []
@@ -310,13 +374,21 @@ def _objective(
         if len(chunks) > 1
         else 0.0
     )
+    (
+        log_weight,
+        percentile_weight,
+        direct_weight,
+        group_weight,
+        pool_weight,
+        instability_weight,
+    ) = OBJECTIVE_PROFILES[objective_profile]
     return float(
-        -0.35 * np.mean(log_ranks)
-        - 0.25 * np.mean(rank_percentiles)
-        + 0.20 * np.mean(direct_hits)
-        + 0.15 * np.mean(group_hits)
-        + 0.05 * np.mean(pool_coverages)
-        - 0.10 * instability
+        -log_weight * np.mean(log_ranks)
+        - percentile_weight * np.mean(rank_percentiles)
+        + direct_weight * np.mean(direct_hits)
+        + group_weight * np.mean(group_hits)
+        + pool_weight * np.mean(pool_coverages)
+        - instability_weight * instability
     )
 
 
@@ -356,6 +428,17 @@ def _local_params(
         temperature=temperatures[next_index],
         random_seed=int(rng.integers(0, 2**31 - 1)),
     )
+
+
+def _profiled_objective(
+    targets: Sequence[_PreparedTarget],
+    params: LearnedRankerParams,
+    objective_profile: str,
+) -> float:
+    # 保持旧测试/插件 monkeypatch 的二参数兼容；balanced 是原 v4 目标。
+    if objective_profile == "balanced":
+        return _objective(targets, params)
+    return _objective(targets, params, objective_profile=objective_profile)
 
 
 def search_learned_ranker_params(
@@ -404,8 +487,12 @@ def search_learned_ranker_params(
             LearnedSearchTrial(
                 params,
                 feature_config,
-                _objective(prepared_search, params),
-                _objective(prepared_validation, params),
+                _profiled_objective(
+                    prepared_search, params, search_config.objective_profile
+                ),
+                _profiled_objective(
+                    prepared_validation, params, search_config.objective_profile
+                ),
             )
             for params in candidates
         )
@@ -450,5 +537,6 @@ def search_learned_ranker_params(
         trials=trials,
         selection_target_indices=(*search_indices, *validation_indices),
         test_segment_used_for_selection=False,
+        objective_profile=search_config.objective_profile,
         search_space_manifest=build_search_space_manifest(smoke=search_config.smoke),
     )

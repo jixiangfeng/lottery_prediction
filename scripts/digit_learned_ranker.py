@@ -30,6 +30,7 @@ from src.analysis.digit_learned_ranker import (  # noqa: E402
     save_params,
 )
 from src.analysis.digit_learned_ranker_search import (  # noqa: E402
+    OBJECTIVE_PROFILES,
     LearnedSearchConfig,
     LearnedSplit,
     sample_feature_configs,
@@ -68,6 +69,17 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--random-trials", type=int, default=24)
     train.add_argument("--local-trials", type=int, default=12)
     train.add_argument("--evaluation-stride", type=int, default=1)
+    train.add_argument(
+        "--frozen-test-periods",
+        type=int,
+        help="显式冻结测试期数；例如 1000 期历史使用 500 期冻结测试",
+    )
+    train.add_argument(
+        "--objective-profile",
+        choices=tuple(OBJECTIVE_PROFILES),
+        default="balanced",
+        help="只在 search/validation 选择目标；frozen test 不参与配置选择",
+    )
     train.add_argument("--seed", type=int, default=20260717)
     train.add_argument(
         "--smoke", action="store_true", help="减少搜索次数和目标期，仅用于流水线冒烟"
@@ -84,7 +96,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def _require_supported(lottery: str) -> None:
     if lottery not in {"fc3d", "pl3"}:
-        raise ValueError("learned_ranker_v4 首版只支持 fc3d/pl3，pl5 请保持旧路径")
+        raise ValueError("learned ranker 只支持 fc3d/pl3，当前不支持 pl5")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -94,7 +106,9 @@ def main(argv: list[str] | None = None) -> int:
     history = load_digit_csv(args.csv, rule)
     output_dir = Path(args.output_dir)
     if args.command == "train":
-        split = LearnedSplit.from_length(len(history))
+        split = LearnedSplit.from_length(
+            len(history), frozen_test_periods=args.frozen_test_periods
+        )
         min_train = min(args.min_train_size, max(3, split.search_end - 1))
         random_trials = 2 if args.smoke else args.random_trials
         local_trials = 1 if args.smoke else args.local_trials
@@ -118,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             feature_config=feature_config,
             feature_configs=feature_configs,
+            objective_profile=args.objective_profile,
             smoke=bool(args.smoke),
         )
         result = search_learned_ranker_params(history, rule, config)
@@ -134,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
             "featureConfig": _feature_payload(result.feature_config),
             "split": split.to_dict(),
             "testSegmentUsedForSelection": False,
+            "objectiveProfile": args.objective_profile,
             "search": result.to_dict(),
             "smoke": bool(args.smoke),
         }

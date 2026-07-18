@@ -22,6 +22,16 @@ from src.analysis.digit_statistics import (
 from src.lotteries.base import LotteryRule
 
 Window = int | str
+DEFAULT_WINDOW_WEIGHTS: Mapping[str, float] = {
+    "10": 3.0,
+    "20": 2.5,
+    "30": 2.0,
+    "50": 1.5,
+    "100": 1.0,
+    "150": 0.75,
+    "300": 0.5,
+    "all": 0.25,
+}
 PAIR_SPECS = ((0, 1), (0, 2), (1, 2))
 FEATURE_NAMES = (
     "position_frequency",
@@ -55,6 +65,9 @@ FEATURE_NAMES = (
     "sum_trend_ratio_30_300",
     "span_trend_ratio_30_300",
     "shape_trend_ratio_30_300",
+    "regime_gap_50_all",
+    "regime_gap_100_all",
+    "regime_gap_150_all",
     "latest_distance",
     "repeat_latest",
     "omission_rebound",
@@ -86,7 +99,10 @@ class LearnedFeatureConfig:
         labels = tuple(str(value) for value in self.windows)
         if len(set(labels)) != len(labels):
             raise ValueError("历史窗口不得重复")
-        supplied = dict(self.window_weights or ((label, 1.0) for label in labels))
+        supplied = dict(
+            self.window_weights
+            or {label: DEFAULT_WINDOW_WEIGHTS.get(label, 1.0) for label in labels}
+        )
         if set(supplied) != set(labels):
             raise ValueError("窗口权重必须与 windows 一一对应")
         canonical = tuple((label, float(supplied[label])) for label in labels)
@@ -470,6 +486,17 @@ def build_candidate_features(
                 )
             else:
                 ratio_by_key[key] = 0.0
+        regime_gaps = {
+            f"regime_gap_{window}_all": float(
+                np.mean(
+                    [
+                        _trend_value(per_window, key, window, "all")
+                        for key in component_keys
+                    ]
+                )
+            )
+            for window in (50, 100, 150)
+        }
         latest = state.latest_numbers
         latest_distance = (
             0.0
@@ -539,6 +566,7 @@ def build_candidate_features(
                 f"{key}_trend_ratio_30_300": value
                 for key, value in ratio_by_key.items()
             },
+            **regime_gaps,
             "latest_distance": -latest_distance,
             "repeat_latest": float(np.mean([repeated_digits, same_position])),
             "omission_rebound": float(

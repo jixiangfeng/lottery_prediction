@@ -35,8 +35,10 @@ from src.analysis.digit_learned_ranker import (
     score_candidates,
 )
 from src.analysis.digit_learned_ranker_search import LearnedSplit
-from src.analysis.digit_pick_tracking import poisson_binomial_right_tail
+from src.analysis.prediction_viability import poisson_binomial_right_tail
 from src.lotteries.base import LotteryRule
+
+DIRECT_CANDIDATE_BUDGETS = (10, 20, 50, 100, 250, 500, 700, 900, 990, 1000)
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,8 @@ class LearnedWalkForwardPeriod:
     direct_hit: bool
     group_hit: bool
     group_random_probability: float
+    group_rank: int = 221
+    position_ranks: tuple[int, int, int] = (11, 11, 11)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -128,6 +132,13 @@ class LearnedRankerReport:
                 "groupPValue": self.group_p_value,
                 "blockMeanRanks": list(self.block_mean_ranks),
                 "stableBlocks": self.stable_blocks,
+                "directCandidateBudgetCurve": build_candidate_budget_curve(
+                    self.periods
+                ),
+                "groupBudgetCurve": build_group_budget_curve(self.periods),
+                "positionPoolBudgetCurve": build_position_pool_budget_curve(
+                    self.periods
+                ),
             },
             "gate": gate,
             "disclaimer": "开奖结果具有随机性；评估不构成预测有效、中奖或盈利承诺。",
@@ -172,6 +183,26 @@ def _period(
     )
     top_groups = groups[: params.group_top_k]
     actual_group = "".join(sorted(actual_text))
+    group_rank = next(
+        (
+            position
+            for position, item in enumerate(groups, start=1)
+            if item.group_key == actual_group
+        ),
+        len(groups) + 1,
+    )
+    position_ranks = []
+    for position in range(3):
+        masses = {
+            digit: math.fsum(
+                float(probabilities[candidate_index])
+                for candidate_index, text in enumerate(texts)
+                if int(text[position]) == digit
+            )
+            for digit in range(10)
+        }
+        ordered_digits = sorted(masses, key=lambda digit: (-masses[digit], digit))
+        position_ranks.append(ordered_digits.index(int(actual_text[position])) + 1)
     return LearnedWalkForwardPeriod(
         target_index=index,
         target_issue=target_issue,
@@ -184,6 +215,8 @@ def _period(
         direct_hit=actual_rank <= params.direct_top_k,
         group_hit=actual_group in {item.group_key for item in top_groups},
         group_random_probability=sum(item.permutations for item in top_groups) / 1000.0,
+        group_rank=group_rank,
+        position_ranks=(position_ranks[0], position_ranks[1], position_ranks[2]),
     )
 
 
@@ -243,6 +276,70 @@ def build_gate_result(
         "group": {"passed": not group_reasons, "reasons": group_reasons},
         "activation": activation,
     }
+
+
+def build_candidate_budget_curve(
+    periods: tuple[LearnedWalkForwardPeriod, ...],
+) -> dict[str, dict[str, float | int]]:
+    """在同一套排序上统计不同直选候选预算，不重复计算特征。"""
+    total = len(periods)
+    if not total:
+        raise ValueError("候选预算曲线至少需要一个目标期")
+    curve: dict[str, dict[str, float | int]] = {}
+    for budget in DIRECT_CANDIDATE_BUDGETS:
+        hits = sum(period.actual_rank <= budget for period in periods)
+        rate = hits / total
+        baseline = budget / 1000.0
+        curve[str(budget)] = {
+            "hits": hits,
+            "periods": total,
+            "hitRate": rate,
+            "randomBaseline": baseline,
+            "lift": rate / baseline if baseline else 0.0,
+        }
+    return curve
+
+
+def build_group_budget_curve(
+    periods: tuple[LearnedWalkForwardPeriod, ...],
+) -> dict[str, dict[str, float | int]]:
+    """统计不同组选 TopK 的命中曲线及固定组选空间随机基线。"""
+    total = len(periods)
+    curve: dict[str, dict[str, float | int]] = {}
+    for budget in (10, 20, 50, 100, 150, 220):
+        hits = sum(period.group_rank <= budget for period in periods)
+        rate = hits / total
+        baseline = budget / 220.0
+        curve[str(budget)] = {
+            "hits": hits,
+            "periods": total,
+            "hitRate": rate,
+            "randomBaseline": baseline,
+            "lift": rate / baseline if baseline else 0.0,
+        }
+    return curve
+
+
+def build_position_pool_budget_curve(
+    periods: tuple[LearnedWalkForwardPeriod, ...],
+) -> dict[str, dict[str, float | int]]:
+    """统计每位位置池大小的三位平均覆盖率及随机基线。"""
+    total = len(periods) * 3
+    curve: dict[str, dict[str, float | int]] = {}
+    for budget in (3, 5, 7, 10):
+        hits = sum(
+            rank <= budget for period in periods for rank in period.position_ranks
+        )
+        rate = hits / total
+        baseline = budget / 10.0
+        curve[str(budget)] = {
+            "hits": hits,
+            "positions": total,
+            "hitRate": rate,
+            "randomBaseline": baseline,
+            "lift": rate / baseline if baseline else 0.0,
+        }
+    return curve
 
 
 def run_learned_ranker_walk_forward(

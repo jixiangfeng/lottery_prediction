@@ -76,6 +76,27 @@ def test_candidate_features_cover_all_1000_candidates_and_are_finite():
     assert {"omission_10", "omission_30", "omission_all"}.issubset(features.columns)
 
 
+def test_recency_regime_features_are_present_and_long_history_is_not_equal_weighted():
+    rule = get_lottery_rule("fc3d")
+    config = LearnedFeatureConfig(windows=(10, 30, 50, 100, 150, 300, "all"))
+    state = build_history_state(_history(180), rule, config)
+    features = build_candidate_features(state, rule)
+
+    assert {"regime_gap_50_all", "regime_gap_100_all", "regime_gap_150_all"}.issubset(
+        features.columns
+    )
+    assert all(
+        config.window_weight_map()[str(window)] > config.window_weight_map()["all"]
+        for window in (10, 30, 50, 100, 150, 300)
+    )
+    assert np.isfinite(
+        features[
+            ["regime_gap_50_all", "regime_gap_100_all", "regime_gap_150_all"]
+        ].to_numpy()
+    ).all()
+    assert features["regime_gap_50_all"].nunique() > 1
+
+
 def test_decay_weight_decreases_monotonically_with_age():
     values = [decay_weight(age, 20.0) for age in range(1, 50)]
     assert all(left > right for left, right in zip(values, values[1:]))

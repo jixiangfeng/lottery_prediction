@@ -19,6 +19,10 @@ from src.analysis.digit_learned_ranker_search import (
     search_learned_ranker_params,
 )
 from src.analysis.digit_learned_ranker_walk_forward import (
+    LearnedWalkForwardPeriod,
+    build_candidate_budget_curve,
+    build_group_budget_curve,
+    build_position_pool_budget_curve,
     build_walk_forward_markdown,
     run_learned_ranker_walk_forward,
     write_walk_forward_report,
@@ -214,3 +218,40 @@ def test_frozen_evaluation_artifacts_are_immutable(tmp_path):
         write_walk_forward_report(changed, tmp_path)
 
     assert json_path.read_bytes() == original
+
+
+def test_candidate_budget_curve_reports_hit_rate_and_random_lift():
+    periods = tuple(
+        LearnedWalkForwardPeriod(
+            target_index=index,
+            target_issue=str(index),
+            history_end_issue=str(index - 1),
+            actual_text="000",
+            actual_rank=rank,
+            actual_probability=0.001,
+            log_loss=6.9,
+            brier_score=0.99,
+            direct_hit=rank <= 10,
+            group_hit=False,
+            group_random_probability=0.1,
+            group_rank=rank % 220 + 1,
+            position_ranks=(rank % 10 + 1, rank % 10 + 1, rank % 10 + 1),
+        )
+        for index, rank in enumerate((1, 20, 500, 1000), start=1)
+    )
+    curve = build_candidate_budget_curve(periods)
+
+    assert curve["10"] == {
+        "hits": 1,
+        "periods": 4,
+        "hitRate": 0.25,
+        "randomBaseline": 0.01,
+        "lift": 25.0,
+    }
+    assert curve["1000"]["hitRate"] == 1.0
+    assert curve["1000"]["randomBaseline"] == 1.0
+    group_curve = build_group_budget_curve(periods)
+    pool_curve = build_position_pool_budget_curve(periods)
+    assert group_curve["220"]["hitRate"] == 1.0
+    assert pool_curve["10"]["hitRate"] == 1.0
+    assert pool_curve["10"]["randomBaseline"] == 1.0

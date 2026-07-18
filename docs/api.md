@@ -1,76 +1,48 @@
 # 公共 API
 
-## 玩法规则
+## 数据
 
-- get_lottery_rule(code)：返回 fc3d、pl3 或 pl5 的 LotteryRule。
-- list_lottery_rules()：返回当前三种玩法。
-- validate_numbers(rule, numbers)：校验号码数量、位置范围和重复规则。
+- `load_digit_csv(path, rule)`：读取并标准化历史 CSV。
+- `normalize_digit_dataframe(df, rule)`：统一期号和位置列。
+- `sort_digit_dataframe_by_issue(df, ascending=True)`：按数值期号排序。
+- `canonical_digit_data_sha256(df, rule)`：计算不受 CSV 行顺序与文本格式影响的 canonical 指纹。
+- `fetch_digit_history(...)`：显式从固定白名单抓取福彩3D或排列三历史。
 
-## 数据与统计
+## 统计
 
-- load_digit_csv(path, rule)：读取并标准化数字彩 CSV。
-- fetch_digit_history(lottery, ...)：显式从固定白名单抓取福彩3D或排列三历史，不被日报/回测隐式调用。
-- write_digit_history_csv(draws, path)：保留期号、号码、日期、来源并原子写入 CSV。
-- normalize_digit_dataframe(df, rule)：统一期号和位置列。
-- analyze_digit_history(df, rule, ...)：计算多窗口经验统计。
-- get_digit_theoretical_probabilities(rule)：精确枚举理论数学基线。
-- analyze_digit_history_with_snapshot(...)：增量统计并返回更新元数据。
+- `analyze_digit_history(df, rule, ...)`：计算通用历史统计。
+- `analyze_digit_history_with_snapshot(...)`：增量统计及快照元数据。
+- `get_digit_theoretical_probabilities(rule)`：精确枚举理论基线。
 
-## 候选与报告
+## learned ranker
 
-- DigitCandidateConfig：候选数量、窗口权重、排序模式和结构约束。
-- DigitCandidateConfig.exclude_latest：`None` 表示玩法默认值；三位彩默认不排除上期原号，排列五默认排除；显式 `True/False` 会覆盖默认值。
-- generate_digit_candidates(...)：生成兼容的直选候选结果。
-- generate_digit_betting_candidates(...)：生成直选和三位彩组选候选。
-- build_advanced_model_scores(...)：生成蒙特卡洛和逻辑回归外部票。
-- generate_digit_report_from_csv(..., freeze_pick_snapshot=False)：生成 Markdown，可选同时生成 JSON；显式冻结时拒绝覆盖同源期不同推荐。
-- fit_digit_probability_calibration(...)：用严格历史前2/3选参、后1/3守门；失败返回学习权重0。
-- build_digit_probability_plan(...)：构建完整1000状态概率、直选纯TopK和组选排列概率和。
-- update_online_weights(...)：根据当期各专家给真实号的概率更新权重，并向固定先验收缩。
-
-## 验证
-
-- run_digit_walk_forward_backtest(...)：严格前推并比较统计、集成和随机策略。
-- write_digit_walk_forward_reports(...)：写入前推 Markdown 和 JSON。
-- save_digit_pick_snapshot(..., immutable=False, experiment_id=None)：保存开奖前候选；schema v3 包含完整候选配置、推荐指纹和不可变标记，不同实验同源期可并存。
-- process_digit_pick_evaluations(...)：复盘已开奖快照并更新累计表现。
-- poisson_binomial_right_tail(...)：计算每期随机概率可变时的精确单侧右尾概率。
-- calculate_group_random_probability(...)：按组选覆盖的有序排列数计算随机命中概率。
-- evaluate_viability_metric(...)：执行样本量、显著性、提升、置信下界和分块稳定性闸门。
-- build_prediction_viability_report(...)：合并直选与组选闸门；三位彩要求两项均通过。
-- run_digit_probability_walk_forward(...)：在最早目标期前冻结一次概率校准，再评估Log Loss、Brier、排名和命中。
-- write_digit_probability_walk_forward_reports(...)：原子写入概率 v2 开发评估 Markdown/JSON。
-- run_digit_online_probability_walk_forward(...)：前段在线预训练，目标段逐期先预测后反馈，并保存完整权重轨迹。
-- write_digit_online_probability_reports(...)：原子写入在线概率 v3 Markdown 和逐期 JSON。
-- build_digit_online_probability_plan(...)：消费在线状态并生成下一期完整概率、直选和组选候选；首次运行全量重放，追加数据只更新新增期。
-- DigitOnlineProbabilityState：保存规则、配置指纹、历史前缀指纹、处理期数和当前专家权重。
-- DigitOnlineProbabilityStateUpdate：报告 `full_rebuild`、`incremental` 或 `cache_hit` 状态更新结果。
-
-严格前推报告 schema v5 在 `strategyViability` 下按策略输出 `directGate`、`groupGate`、`viable` 和 `reason`。每个目标期同时保存 `directRandomProbability` 与 `groupRandomProbability`，便于复核零假设。
-
-所有分数与报告仅用于历史研究，不保证中奖。
-
-## learned_ranker_v4
-
-- `build_history_state(history, rule, config, target_issue=...)`：按数值期号排除目标期及未来数据。
-- `build_candidate_features(state, rule, candidates=None)`：生成完整 `000-999` 多窗口特征矩阵。
+- `LearnedFeatureConfig`：窗口、窗口权重、alpha、half-life 与 omission cap。
+- `build_history_state(history, rule, config, target_issue=...)`：只构建目标期以前的状态。
+- `build_candidate_features(state, rule, candidates=None)`：生成完整 `000–999` 原生特征矩阵。
+- `LearnedRankerParams`：固定权重、温度和候选成本。
 - `score_candidates(features, params)`：执行固定线性评分。
-- `build_learned_ranker_plan(features, params, rule)`：输出直选、组选、位置复式池和组选数字池。
-- `search_learned_ranker_params(history, rule, config)`：仅使用 search/validation 选参，返回搜索轨迹和最终特征配置。
-- `run_learned_ranker_walk_forward(history, rule, params, split)`：冻结参数评估 test 段，不执行调参。
-- `generate_learned_ranker_daily(...)`：写出 Markdown、JSON 和不可覆盖冻结快照。
-- CLI：`scripts/digit_learned_ranker.py train|evaluate|daily`。
+- `build_learned_ranker_plan(features, params, rule)`：生成直选、组选与位置池研究方案。
+- `search_learned_ranker_params(history, rule, config)`：只使用 Search/Validation 选参。
+- `run_learned_ranker_walk_forward(history, rule, params, split)`：锁定参数后评估 Frozen Test。
+- `generate_learned_ranker_daily(...)`：生成研究日报和不可覆盖快照。
+- `build_candidate_budget_curve(periods)`：直选预算曲线。
+- `build_group_budget_curve(periods)`：组选预算曲线。
+- `build_position_pool_budget_curve(periods)`：位置池预算曲线。
+- `resolve_activation(...)`：生成 common/direct/group 分项激活语义。
 
-参数 JSON 的 `paramsFingerprint` 覆盖完整模型与特征配置，`artifactFingerprint` 覆盖参数元数据和冻结切分。冻结评估 JSON 通过 `reportFingerprint` 校验全部字段，并记录 `evaluationKind=frozen_test`、`testSegmentUsedForSelection=false`、CSV/源码/参数产物指纹；daily 只有在玩法和这些冻结证据全部匹配时才读取 `gate.passed=true` 晋级。
+## CLI
 
-参数概率是 softmax 归一化排序值，不应解释为真实开奖概率。
-# learned_ranker_v4 补充 API
+唯一预测 CLI：
 
-- `canonical_digit_data_sha256(df, rule) -> str`：标准化数据并按数值期号升序序列化，返回不受 CSV 行顺序和文本格式影响的 SHA-256。
-- `LearnedFeatureConfig.window_weights`：与 `windows` 一一对应的 canonical 正权重；参与参数序列化和指纹。
-- `build_search_space_manifest(smoke=...)`：声明特征权重边界、窗口集合/权重 profile、alpha、half-life、omission cap、temperature、组选聚合、归一化和固定推荐成本；smoke 只改变有界采样预算，单次运行不声称穷举笛卡尔积。
-- `resolve_activation(...)`：返回 common/direct/group、activeDirect/activeGroup 和兼容 overall 语义。
-- `process_learned_ranker_live_evaluations(...)`：只读取 immutable v4 快照，按 `(ruleCode, experimentId, paramsFingerprint, targetIssue)` 去重并输出实验隔离汇总。
-- 冻结评估 `gate` 同时提供 `common`、`direct`、`group`、`activation` 和兼容 `passed`。
-- 日报 `plan` 同时提供 `mainRecommendation` 与 `research`；未通过分项不会出现在主推荐。
-- v4 快照 schema v2 必含 `modelVersion/experimentId/sourceIssue/targetIssue或nextIssueInterpretation/generatedAt/immutable/paramsFingerprint/paramsArtifactFingerprint/canonicalDataSha256/frozenDataCanonicalSha256/sourceFingerprint/activation/candidates/snapshotFingerprint`；冻结评估按 `split.testEnd` 前缀校验，允许后续追加但拒绝前缀修改。
+```text
+scripts/digit_learned_ranker.py train|evaluate|daily
+```
+
+历史 v1/v2/v3 API 已删除，不提供兼容导入。
+
+## 语义约束
+
+- `sum_prob` 才能称为组选概率；
+- `max_perm` 与 `mean_top_perm` 只能称为 score/aggregation；
+- softmax 数值是排序归一化值，不应解释为真实开奖概率；
+- 所有报告仅用于历史研究，不保证预测有效、中奖或盈利。

@@ -38,6 +38,7 @@ from src.analysis.digit_learned_ranker_search import (
     FULL_HALF_LIVES,
     FULL_OMISSION_CAPS,
     FULL_TEMPERATURES,
+    OBJECTIVE_PROFILES,
     LearnedSearchTrial,
     LearnedSplit,
     build_search_space_manifest,
@@ -148,6 +149,27 @@ def test_canonical_data_hash_ignores_row_order_and_csv_formatting():
     )
 
 
+def test_split_supports_explicit_500_period_frozen_test():
+    split = LearnedSplit.from_length(1000, frozen_test_periods=500)
+
+    assert split.to_dict() == {"searchEnd": 250, "validationEnd": 500, "testEnd": 1000}
+
+
+def test_objective_profiles_are_explicit_and_searchable():
+    assert {
+        "balanced",
+        "direct_focus",
+        "group_focus",
+        "pool_focus",
+        "direct_hit_only",
+        "group_hit_only",
+        "pool_hit_only",
+    }.issubset(OBJECTIVE_PROFILES)
+    assert OBJECTIVE_PROFILES["direct_hit_only"] == (0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+    assert OBJECTIVE_PROFILES["group_hit_only"] == (0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    assert OBJECTIVE_PROFILES["pool_hit_only"] == (0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+
 def test_full_search_manifest_records_all_required_dimensions_and_profiles():
     manifest = build_search_space_manifest(smoke=False)
 
@@ -178,6 +200,9 @@ def test_full_search_manifest_records_all_required_dimensions_and_profiles():
         "mean_top_perm",
     ]
     assert set(manifest["featureWeightRanges"]) == set(FEATURE_NAMES)
+    assert manifest["objectiveProfiles"] == {
+        name: list(weights) for name, weights in OBJECTIVE_PROFILES.items()
+    }
     assert manifest["featureNormalization"] == "robust_zscore"
     assert manifest["recommendationConfig"] == {
         "directTopK": [10],
@@ -617,7 +642,9 @@ def test_daily_keeps_frozen_evaluation_valid_when_history_only_appends(tmp_path:
     rule = get_lottery_rule("fc3d")
     history = pd.read_csv(csv_path, dtype=str)
     split = LearnedSplit(search_end=10, validation_end=14, test_end=20)
-    feature_config = LearnedFeatureConfig(windows=(5, "all"))
+    feature_config = LearnedFeatureConfig(
+        windows=(5, "all"), window_weights={"5": 1.0, "all": 1.0}
+    )
     params = LearnedRankerParams()
     frozen_canonical = canonical_digit_data_sha256(history, rule)
     save_params(
