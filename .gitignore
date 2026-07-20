@@ -138,8 +138,10 @@ results/
 logs/
 *.csv
 *.json
-reports/state/*.lock
-reports/**/state/*.lock
+reports/
+state/
+lottery_prediction_flow.html
+lottery_prediction_flow.png
 models/
 cache/
 temp/

@@ -7,7 +7,6 @@ import json
 from dataclasses import replace
 
 import pandas as pd
-import pytest
 
 import src.analysis.digit_learned_ranker_search as search_module
 import src.analysis.digit_learned_ranker_walk_forward as walk_forward_module
@@ -80,7 +79,7 @@ def test_search_can_reproducibly_compare_feature_window_decay_and_omission_confi
     assert {trial.feature_config for trial in first.trials} == set(feature_configs)
 
 
-def test_validation_objective_does_not_choose_local_search_start(monkeypatch):
+def test_validation_objective_never_selects_params(monkeypatch):
     rule = get_lottery_rule("fc3d")
     config = LearnedSearchConfig(
         split=LearnedSplit(search_end=12, validation_end=18, test_end=20),
@@ -110,10 +109,15 @@ def test_validation_objective_does_not_choose_local_search_start(monkeypatch):
     monkeypatch.setattr(search_module, "_prepare_targets", fake_prepare)
     monkeypatch.setattr(search_module, "_objective", fake_objective)
     monkeypatch.setattr(search_module, "_local_params", fake_local)
+    monkeypatch.setattr(
+        search_module, "build_development_budget_curves", lambda targets, params: {}
+    )
 
-    search_learned_ranker_params(_history(20), rule, config)
+    result = search_learned_ranker_params(_history(20), rule, config)
 
     assert local_bases == [LearnedRankerParams()]
+    assert result.params == LearnedRankerParams()
+    assert result.validation_objective == 1.0
 
 
 def test_frozen_walk_forward_is_repeatable_and_reports_exact_group_baseline(tmp_path):
@@ -214,10 +218,11 @@ def test_frozen_evaluation_artifacts_are_immutable(tmp_path):
     original = json_path.read_bytes()
     changed = replace(report, gate_passed=not report.gate_passed)
 
-    with pytest.raises(FileExistsError, match="冻结评估"):
-        write_walk_forward_report(changed, tmp_path)
+    _, versioned_json_path = write_walk_forward_report(changed, tmp_path)
 
+    assert versioned_json_path != json_path
     assert json_path.read_bytes() == original
+    assert versioned_json_path.read_bytes() != original
 
 
 def test_candidate_budget_curve_reports_hit_rate_and_random_lift():

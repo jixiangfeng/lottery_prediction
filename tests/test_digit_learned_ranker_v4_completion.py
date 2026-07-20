@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from scripts.digit_learned_ranker import main as learned_ranker_main
+from src.analysis import digit_learned_ranker_search as ranker_search
 from src.analysis.digit_data import canonical_digit_data_sha256
 from src.analysis.digit_learned_features import (
     FEATURE_NAMES,
@@ -99,38 +100,28 @@ def test_window_weights_are_canonical_fingerprintable_and_change_scores():
     )
 
 
-def test_trend_features_keep_independent_components_and_named_horizons():
+def test_active_feature_set_is_compact_and_finite():
     rule = get_lottery_rule("pl3")
     config = LearnedFeatureConfig(windows=(30, 50, 300, "all"))
     features = build_candidate_features(
         build_history_state(_history(90), rule, config), rule, candidates=("012", "987")
     )
 
-    component_names = ("position", "pair", "sum", "span", "shape")
-    required = {
+    assert set(FEATURE_NAMES) == {
+        "position_frequency",
+        "position_omission",
+        "pair_frequency",
+        "sum_distribution",
+        "span_distribution",
+        "recent_trend",
         "position_trend",
         "pair_trend",
-        "sum_trend",
-        "span_trend",
-        "shape_trend",
-        "trend_30_300",
-        "trend_50_all",
-        "trend_ratio_30_300",
-        *(f"{name}_trend_30_300" for name in component_names),
-        *(f"{name}_trend_50_all" for name in component_names),
-        *(f"{name}_trend_ratio_30_300" for name in component_names),
+        "shape_transition",
+        "shape_recent_deviation",
+        "constraint_penalty",
     }
-    assert required.issubset(FEATURE_NAMES)
-    assert required.issubset(features.columns)
-    assert np.isfinite(features[list(required)].to_numpy()).all()
-    assert not np.allclose(
-        features["position_trend"].to_numpy(), features["pair_trend"].to_numpy()
-    )
-    assert not np.allclose(features["trend_ratio_30_300"].to_numpy(), 0.0)
-    assert any(
-        not np.allclose(features[f"{name}_trend_ratio_30_300"].to_numpy(), 0.0)
-        for name in component_names
-    )
+    assert set(FEATURE_NAMES).issubset(features.columns)
+    assert np.isfinite(features[list(FEATURE_NAMES)].to_numpy()).all()
 
 
 def test_canonical_data_hash_ignores_row_order_and_csv_formatting():
@@ -241,25 +232,38 @@ def test_search_trial_serializes_canonical_window_weights():
     }
 
 
-def test_partial_gate_activation_is_independent_and_overall_is_compatibility_only():
+def test_partial_gate_activation_is_independent_for_three_outputs():
     direct_only = resolve_activation(
-        common_passed=True, direct_passed=True, group_passed=False
+        common_passed=True,
+        direct_passed=True,
+        group_passed=False,
+        position_passed=False,
     )
     group_only = resolve_activation(
-        common_passed=True, direct_passed=False, group_passed=True
+        common_passed=True,
+        direct_passed=False,
+        group_passed=True,
+        position_passed=False,
     )
     common_failed = resolve_activation(
-        common_passed=False, direct_passed=True, group_passed=True
+        common_passed=False,
+        direct_passed=True,
+        group_passed=True,
+        position_passed=True,
     )
 
     assert direct_only == {
         "commonPassed": True,
         "directPassed": True,
         "groupPassed": False,
+        "positionPassed": False,
         "activeDirect": True,
         "activeGroup": False,
+        "activePosition": False,
         "overallPassed": False,
-        "overallSemantics": "commonPassed && directPassed && groupPassed（兼容字段）",
+        "overallSemantics": (
+            "commonPassed && directPassed && groupPassed && positionPassed"
+        ),
     }
     assert group_only["activeDirect"] is False
     assert group_only["activeGroup"] is True
@@ -273,6 +277,7 @@ def test_frozen_gate_report_splits_common_direct_and_group():
         mean_log_loss=6.8,
         direct_p_value=0.01,
         group_p_value=0.20,
+        position_p_value=0.01,
         stable_blocks=2,
     )
 
@@ -292,7 +297,10 @@ def test_daily_plan_separates_active_main_recommendation_from_research():
         "groupDigitPool": [1, 2, 3],
     }
     activation = resolve_activation(
-        common_passed=True, direct_passed=False, group_passed=True
+        common_passed=True,
+        direct_passed=False,
+        group_passed=True,
+        position_passed=False,
     )
 
     partitioned = partition_plan_by_activation(plan, activation)
@@ -360,10 +368,13 @@ def test_daily_snapshot_is_self_describing_timezone_aware_and_immutable(tmp_path
     assert payload["canonicalDataSha256"]
     assert payload["sourceFingerprint"]
     assert payload["activation"]
+    assert payload["positionPassed"] is False
+    assert set(payload["strategyStatuses"]) == {"direct", "group", "position"}
+    assert (output_dir / payload["strategyRegistry"]).exists()
     assert payload["candidates"] == payload["plan"]
     assert payload["snapshotFingerprint"]
     assert payload["featureConfig"]["windowWeights"]
-    markdown = (output_dir / "learned_ranker_v4_daily").glob("*.md")
+    markdown = (output_dir / "daily" / "fc3d").glob("*.md")
     assert "研究分区（直选，未启用）" in next(markdown).read_text(encoding="utf-8")
 
 
@@ -492,7 +503,7 @@ def test_cli_train_evaluate_daily_smoke_for_each_supported_rule(
 
     assert (output_dir / "evaluations" / f"learned_ranker_v4_{lottery}.json").exists()
     daily_matches = list(
-        (output_dir / "learned_ranker_v4_daily").glob(
+        (output_dir / "daily" / lottery).glob(
             f"{lottery}_learned_ranker_v4_*_daily_2026016.json"
         )
     )
@@ -531,7 +542,7 @@ def test_two_fresh_processes_produce_same_core_daily_artifact(tmp_path: Path):
             text=True,
         )
         daily_path = next(
-            (output_dir / "learned_ranker_v4_daily").glob("fc3d*_daily_2026020.json")
+            (output_dir / "daily" / "fc3d").glob("fc3d*_daily_2026020.json")
         )
         payload = json.loads(daily_path.read_text(encoding="utf-8"))
         payload.pop("generatedAt")
@@ -612,7 +623,10 @@ def test_daily_rejects_re_fingerprinted_evaluation_with_wrong_canonical_hash(
     evaluation["canonicalDataSha256"] = "0" * 64
     evaluation["gate"]["passed"] = True
     evaluation["gate"]["activation"] = resolve_activation(
-        common_passed=True, direct_passed=True, group_passed=True
+        common_passed=True,
+        direct_passed=True,
+        group_passed=True,
+        position_passed=True,
     )
     evaluation.pop("reportFingerprint")
     evaluation["reportFingerprint"] = payload_fingerprint(evaluation)
@@ -713,3 +727,136 @@ def test_daily_keeps_frozen_evaluation_valid_when_history_only_appends(tmp_path:
     assert daily["evaluationValidation"]["canonicalMatched"] is True
     assert daily["frozenDataCanonicalSha256"] == frozen_canonical
     assert daily["canonicalDataSha256"] != frozen_canonical
+
+
+def test_prepared_target_disk_cache_round_trip(tmp_path):
+    candidates = [f"{value:03d}" for value in range(1000)]
+    features = pd.DataFrame(
+        {
+            "candidate": candidates,
+            **{
+                name: np.arange(1000, dtype=float) + feature_index
+                for feature_index, name in enumerate(FEATURE_NAMES)
+            },
+        }
+    )
+    targets = (ranker_search._PreparedTarget(features, "123"),)
+    path = tmp_path / "prepared.npz"
+
+    ranker_search._write_prepared_cache(path, targets)
+    restored = ranker_search._read_prepared_cache(path)
+
+    assert restored is not None
+    assert restored[0].actual_text == "123"
+    pd.testing.assert_frame_equal(restored[0].features, features)
+
+
+def test_pool_hit_objective_uses_fixed_probability_mass_pool():
+    candidates = [f"{value:03d}" for value in range(1000)]
+    features = pd.DataFrame(
+        {
+            "candidate": candidates,
+            **{name: np.zeros(1000) for name in FEATURE_NAMES},
+        }
+    )
+    target = ranker_search._PreparedTarget(features=features, actual_text="999")
+
+    objective = ranker_search._objective(
+        (target,),
+        LearnedRankerParams(position_pool_size=5),
+        objective_profile="pool_hit_only",
+    )
+
+    assert objective == 0.0
+
+
+def test_profile_searches_share_prepared_target_cache(monkeypatch):
+    history = _history(20)
+    rule = get_lottery_rule("fc3d")
+    split = LearnedSplit(search_end=10, validation_end=14, test_end=20)
+    base = ranker_search.LearnedSearchConfig(
+        split=split,
+        min_train_size=6,
+        random_trials=1,
+        local_trials=0,
+        evaluation_stride=2,
+        feature_configs=(LearnedFeatureConfig(windows=(10, "all")),),
+        objective_profile="direct_hit_only",
+        direct_objective_top_k=50,
+        position_objective_pool_size=3,
+    )
+    calls = 0
+    original = ranker_search._prepare_targets
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ranker_search, "_prepare_targets", counted)
+    cache = {}
+    direct_result = ranker_search.search_learned_ranker_params(
+        history, rule, base, prepared_target_cache=cache
+    )
+    ranker_search.search_learned_ranker_params(
+        history,
+        rule,
+        replace(base, objective_profile="group_hit_only"),
+        prepared_target_cache=cache,
+    )
+
+    assert calls == 2
+    assert direct_result.params.direct_top_k == 50
+    assert direct_result.params.position_pool_size == 3
+
+
+def test_joint_budget_selector_uses_search_and_validates_stability():
+    def metric(lift, blocks):
+        return {
+            "lift": lift,
+            "timeBlocks": [{"lift": value} for value in blocks],
+        }
+
+    curves = {
+        "fc3d": {
+            "search": {
+                "direct": {
+                    "10": metric(1.5, [1.2, 0.8, 1.1]),
+                    "20": metric(1.3, [1.1, 1.0, 1.2]),
+                    "1000": metric(1.0, [1.0, 1.0, 1.0]),
+                }
+            },
+            "validation": {
+                "direct": {
+                    "10": metric(1.1, [1.2, 0.7, 1.1]),
+                    "20": metric(1.2, [1.1, 1.0, 1.1]),
+                    "1000": metric(1.0, [1.0, 1.0, 1.0]),
+                }
+            },
+        },
+        "pl3": {
+            "search": {
+                "direct": {
+                    "10": metric(1.4, [0.9, 1.2, 0.8]),
+                    "20": metric(1.2, [1.0, 1.1, 1.2]),
+                    "1000": metric(1.0, [1.0, 1.0, 1.0]),
+                }
+            },
+            "validation": {
+                "direct": {
+                    "10": metric(1.3, [1.1, 0.9, 1.2]),
+                    "20": metric(1.1, [1.0, 1.1, 1.0]),
+                    "1000": metric(1.0, [1.0, 1.0, 1.0]),
+                }
+            },
+        },
+    }
+
+    selected = ranker_search.select_joint_budget(
+        curves, kind="direct", full_coverage_budget=1000
+    )
+
+    assert selected["selectedBudget"] == 20
+    assert selected["searchQualified"] is True
+    assert selected["validationConfirmed"] is True
+    assert selected["validationUsedForSelection"] is False

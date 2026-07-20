@@ -169,3 +169,34 @@ def load_digit_csv(
     csv_path = Path(path)
     df = pd.read_csv(csv_path, dtype=str, encoding=encoding)
     return normalize_digit_dataframe(df, rule)
+
+
+def load_digit_development_csv(
+    path: str | Path,
+    rule: LotteryRule,
+    *,
+    frozen_test_periods: int,
+    encoding: str = "utf-8",
+) -> tuple[pd.DataFrame, int]:
+    """只加载Frozen之前的开奖号码，返回开发数据和完整行数。"""
+
+    if frozen_test_periods <= 0:
+        raise ValueError("frozen_test_periods必须大于零")
+    csv_path = Path(path)
+    issue_only = pd.read_csv(csv_path, usecols=["期数"], dtype=str, encoding=encoding)
+    if len(issue_only) <= frozen_test_periods:
+        raise ValueError("历史长度必须大于frozen_test_periods")
+    issue_order = issue_only["期数"].astype(str).str.strip().map(int)
+    development_end = len(issue_only) - frozen_test_periods
+    development_rows = set(
+        issue_order.sort_values(kind="mergesort").index[:development_end].tolist()
+    )
+    raw_development = pd.read_csv(
+        csv_path,
+        dtype=str,
+        encoding=encoding,
+        skiprows=lambda line_number: (
+            line_number > 0 and (line_number - 1) not in development_rows
+        ),
+    )
+    return normalize_digit_dataframe(raw_development, rule), len(issue_only)

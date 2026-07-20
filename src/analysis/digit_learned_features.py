@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -33,44 +34,19 @@ DEFAULT_WINDOW_WEIGHTS: Mapping[str, float] = {
     "all": 0.25,
 }
 PAIR_SPECS = ((0, 1), (0, 2), (1, 2))
+SHAPE_NAMES = ("组六", "组三", "豹子")
+SHAPE_PRIORS = {"组六": 0.72, "组三": 0.27, "豹子": 0.01}
 FEATURE_NAMES = (
     "position_frequency",
     "position_omission",
     "pair_frequency",
-    "shape_distribution",
     "sum_distribution",
     "span_distribution",
-    "parity_bigsmall",
     "recent_trend",
     "position_trend",
     "pair_trend",
-    "sum_trend",
-    "span_trend",
-    "shape_trend",
-    "trend_30_300",
-    "trend_50_all",
-    "trend_ratio_30_300",
-    "position_trend_30_300",
-    "pair_trend_30_300",
-    "sum_trend_30_300",
-    "span_trend_30_300",
-    "shape_trend_30_300",
-    "position_trend_50_all",
-    "pair_trend_50_all",
-    "sum_trend_50_all",
-    "span_trend_50_all",
-    "shape_trend_50_all",
-    "position_trend_ratio_30_300",
-    "pair_trend_ratio_30_300",
-    "sum_trend_ratio_30_300",
-    "span_trend_ratio_30_300",
-    "shape_trend_ratio_30_300",
-    "regime_gap_50_all",
-    "regime_gap_100_all",
-    "regime_gap_150_all",
-    "latest_distance",
-    "repeat_latest",
-    "omission_rebound",
+    "shape_transition",
+    "shape_recent_deviation",
     "constraint_penalty",
 )
 
@@ -79,9 +55,9 @@ FEATURE_NAMES = (
 class LearnedFeatureConfig:
     """v4 特征配置；窗口只读取目标期之前的数据。"""
 
-    windows: tuple[Window, ...] = (10, 20, 30, 50, 100, 300, "all")
+    windows: tuple[Window, ...] = (20, 50, 150)
     alpha: float = 2.0
-    half_life: float | None = None
+    half_life: float | None = 50.0
     omission_cap: int = 50
     window_weights: tuple[tuple[str, float], ...] | Mapping[str, float] | None = None
 
@@ -168,6 +144,9 @@ def build_history_state(
         chronological = chronological[
             chronological["期数"].astype(int) < int(target_issue)
         ]
+    finite_windows = [int(window) for window in effective.windows if window != "all"]
+    if "all" not in effective.windows and finite_windows:
+        chronological = chronological.tail(max(finite_windows))
     issues = tuple(chronological["期数"].astype(str).tolist())
     number_rows: list[tuple[int, int, int]] = []
     for _, row in chronological.iterrows():
@@ -182,6 +161,51 @@ def build_history_state(
         history_end_issue=issues[-1] if issues else None,
         numbers=rows,
     )
+
+
+def iter_rolling_history_states(
+    history: pd.DataFrame,
+    rule: LotteryRule,
+    target_indices: Sequence[int],
+    config: LearnedFeatureConfig | None = None,
+) -> Iterator[LearnedHistoryState]:
+    """按升序目标索引增量追加历史，并产出无泄漏只读快照。"""
+
+    effective = config or LearnedFeatureConfig()
+    indices = tuple(int(index) for index in target_indices)
+    if any(index <= 0 for index in indices) or any(
+        right <= left for left, right in zip(indices, indices[1:])
+    ):
+        raise ValueError("目标索引必须为严格递增正整数")
+    chronological = sort_digit_dataframe_by_issue(
+        normalize_digit_dataframe(history, rule), ascending=True
+    )
+    if indices and indices[-1] >= len(chronological):
+        raise ValueError("目标索引超过历史范围")
+    finite_windows = [int(window) for window in effective.windows if window != "all"]
+    maximum_history = (
+        len(chronological) if "all" in effective.windows else max(finite_windows)
+    )
+    issue_buffer: deque[str] = deque(maxlen=maximum_history)
+    number_buffer: deque[tuple[int, int, int]] = deque(maxlen=maximum_history)
+    cursor = 0
+    for target_index in indices:
+        while cursor < target_index:
+            row = chronological.iloc[cursor]
+            issue_buffer.append(str(row["期数"]))
+            values = tuple(int(row[column]) for column in rule.number_columns)
+            number_buffer.append((values[0], values[1], values[2]))
+            cursor += 1
+        target_issue = str(chronological.iloc[target_index]["期数"])
+        issues = tuple(issue_buffer)
+        yield LearnedHistoryState(
+            rule_code=rule.code,
+            config=effective,
+            target_issue=target_issue,
+            history_issues=issues,
+            history_end_issue=issues[-1] if issues else None,
+            numbers=tuple(number_buffer),
+        )
 
 
 def enumerate_three_digit_candidates() -> tuple[str, ...]:
@@ -234,6 +258,44 @@ def _patterns(numbers: tuple[int, int, int]) -> dict[str, object]:
     }
 
 
+def _shape_deviation_maps(
+    numbers: tuple[tuple[int, int, int], ...],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """一次性计算三种形态的转移和近期先验偏离。"""
+    zero = {name: 0.0 for name in SHAPE_NAMES}
+    if not numbers:
+        return zero.copy(), zero.copy()
+    shapes = [classify_digit_shape(row) for row in numbers]
+    smoothing = 20.0
+    transitions = list(zip(shapes[:-1], shapes[1:]))
+    previous_shape = shapes[-1]
+    transition_values = [right for left, right in transitions if left == previous_shape]
+    recent = shapes[-30:]
+    transition = {
+        name: math.log(
+            max(
+                (transition_values.count(name) + smoothing * SHAPE_PRIORS[name])
+                / (len(transition_values) + smoothing),
+                1e-12,
+            )
+            / SHAPE_PRIORS[name]
+        )
+        for name in SHAPE_NAMES
+    }
+    recent_map = {
+        name: math.log(
+            max(
+                (recent.count(name) + smoothing * SHAPE_PRIORS[name])
+                / (len(recent) + smoothing),
+                1e-12,
+            )
+            / SHAPE_PRIORS[name]
+        )
+        for name in SHAPE_NAMES
+    }
+    return transition, recent_map
+
+
 def _omission_statistics(
     numbers: tuple[tuple[int, int, int], ...],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -264,111 +326,55 @@ def _omission_statistics(
     return current, maximum, means, stds
 
 
-def _window_feature_row(
-    candidate: tuple[int, int, int],
+def _smoothed_rates(
+    values: np.ndarray,
+    domain_size: int,
+    weights: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+    counts = np.bincount(values, weights=weights, minlength=domain_size).astype(float)
+    return (counts + alpha / domain_size) / (float(weights.sum()) + alpha)
+
+
+def _window_feature_arrays(
+    candidates: np.ndarray,
     rows: tuple[tuple[int, int, int], ...],
     config: LearnedFeatureConfig,
-) -> dict[str, float]:
+) -> dict[str, np.ndarray]:
+    """一次性计算一个窗口内全部候选的核心特征。"""
+
+    candidate_count = len(candidates)
     if not rows:
         return {
-            "position": math.log(0.1),
-            "pair": math.log(0.01),
-            "shape": math.log(1 / 3),
-            "sum": math.log(1 / 28),
-            "span": math.log(0.1),
-            "parity_bigsmall": math.log(1 / 16),
+            "position": np.full(candidate_count, math.log(0.1)),
+            "pair": np.full(candidate_count, math.log(0.01)),
+            "sum": np.full(candidate_count, math.log(1 / 28)),
+            "span": np.full(candidate_count, math.log(0.1)),
         }
+    history = np.asarray(rows, dtype=int)
     weights = _weights(len(rows), config.half_life)
-    candidate_pattern = _patterns(candidate)
-    patterns = [_patterns(row) for row in rows]
-    position_rates = [
-        _rate([row[index] for row in rows], candidate[index], 10, weights, config.alpha)
-        for index in range(3)
-    ]
-    pair_rates = [
-        _rate(
-            [(row[left], row[right]) for row in rows],
-            (candidate[left], candidate[right]),
-            100,
-            weights,
-            config.alpha,
-        )
-        for left, right in PAIR_SPECS
-    ]
-    parity = _rate(
-        [item["parity"] for item in patterns],
-        candidate_pattern["parity"],
-        4,
-        weights,
-        config.alpha,
-    )
-    big_small = _rate(
-        [item["big_small"] for item in patterns],
-        candidate_pattern["big_small"],
-        4,
-        weights,
-        config.alpha,
-    )
-    prime = _rate(
-        [item["prime"] for item in patterns],
-        candidate_pattern["prime"],
-        4,
-        weights,
-        config.alpha,
-    )
-    sum_tail = _rate(
-        [item["sum_tail"] for item in patterns],
-        candidate_pattern["sum_tail"],
-        10,
-        weights,
-        config.alpha,
-    )
-    consecutive = _rate(
-        [item["consecutive"] for item in patterns],
-        candidate_pattern["consecutive"],
-        2,
-        weights,
-        config.alpha,
-    )
-    mirror = _rate(
-        [item["mirror"] for item in patterns],
-        candidate_pattern["mirror"],
-        2,
-        weights,
-        config.alpha,
-    )
+    position_logs = []
+    for position in range(3):
+        rates = _smoothed_rates(history[:, position], 10, weights, config.alpha)
+        position_logs.append(np.log(rates[candidates[:, position]]))
+    pair_logs = []
+    for left, right in PAIR_SPECS:
+        history_codes = history[:, left] * 10 + history[:, right]
+        candidate_codes = candidates[:, left] * 10 + candidates[:, right]
+        rates = _smoothed_rates(history_codes, 100, weights, config.alpha)
+        pair_logs.append(np.log(rates[candidate_codes]))
+    history_sums = history.sum(axis=1)
+    candidate_sums = candidates.sum(axis=1)
+    history_spans = history.max(axis=1) - history.min(axis=1)
+    candidate_spans = candidates.max(axis=1) - candidates.min(axis=1)
     return {
-        "position": float(np.mean(np.log(position_rates))),
-        "pair": float(np.mean(np.log(pair_rates))),
-        "shape": math.log(
-            _rate(
-                [item["shape"] for item in patterns],
-                candidate_pattern["shape"],
-                3,
-                weights,
-                config.alpha,
-            )
+        "position": np.mean(np.vstack(position_logs), axis=0),
+        "pair": np.mean(np.vstack(pair_logs), axis=0),
+        "sum": np.log(
+            _smoothed_rates(history_sums, 28, weights, config.alpha)[candidate_sums]
         ),
-        "sum": math.log(
-            _rate(
-                [item["sum"] for item in patterns],
-                candidate_pattern["sum"],
-                28,
-                weights,
-                config.alpha,
-            )
-        ),
-        "span": math.log(
-            _rate(
-                [item["span"] for item in patterns],
-                candidate_pattern["span"],
-                10,
-                weights,
-                config.alpha,
-            )
-        ),
-        "parity_bigsmall": float(
-            np.mean(np.log([parity, big_small, prime, sum_tail, consecutive, mirror]))
+        "span": np.log(
+            _smoothed_rates(history_spans, 10, weights, config.alpha)[candidate_spans]
         ),
     }
 
@@ -381,29 +387,16 @@ def _robust_z(values: np.ndarray) -> np.ndarray:
     return np.clip((values - median) / scale, -8.0, 8.0)
 
 
-def _weighted_window_mean(
-    per_window: Mapping[Window, Mapping[str, float]],
+def _weighted_window_arrays(
+    per_window: Mapping[Window, Mapping[str, np.ndarray]],
     key: str,
     config: LearnedFeatureConfig,
-) -> float:
-    weights = config.window_weight_map()
-    numerator = math.fsum(
-        float(values[key]) * weights[str(window)]
-        for window, values in per_window.items()
-    )
-    denominator = math.fsum(weights[str(window)] for window in per_window)
-    return numerator / denominator
-
-
-def _trend_value(
-    per_window: Mapping[Window, Mapping[str, float]],
-    key: str,
-    left: Window,
-    right: Window,
-) -> float:
-    if left not in per_window or right not in per_window:
-        return 0.0
-    return float(per_window[left][key] - per_window[right][key])
+) -> np.ndarray:
+    window_weights = config.window_weight_map()
+    ordered = tuple(per_window)
+    weights = np.asarray([window_weights[str(window)] for window in ordered])
+    matrix = np.vstack([per_window[window][key] for window in ordered])
+    return np.average(matrix, axis=0, weights=weights)
 
 
 def build_candidate_features(
@@ -427,169 +420,76 @@ def build_candidate_features(
         if len(text) != 3 or not text.isdigit():
             raise ValueError(f"三位彩候选必须是 000-999：{text}")
         parsed.append((int(text[0]), int(text[1]), int(text[2])))
-    current, maximum, means, stds = _omission_statistics(state.numbers)
+    candidate_digits = np.asarray(parsed, dtype=int)
     window_rows = {
         window: _window_rows(state, window) for window in state.config.windows
+    }
+    per_window = {
+        window: _window_feature_arrays(candidate_digits, values, state.config)
+        for window, values in window_rows.items()
     }
     window_omissions = {
         window: _omission_statistics(values) for window, values in window_rows.items()
     }
-    rows: list[dict[str, object]] = []
-    for text, candidate in zip(texts, parsed):
-        pattern = _patterns(candidate)
-        per_window = {
-            window: _window_feature_row(candidate, values, state.config)
-            for window, values in window_rows.items()
+    shape_transition_map, shape_recent_map = _shape_deviation_maps(state.numbers)
+    omission_arrays = []
+    positions = np.arange(3)[:, None]
+    for current, maximum, _, _ in window_omissions.values():
+        selected = current[positions, candidate_digits.T]
+        selected_maximum = maximum[positions, candidate_digits.T]
+        omission_arrays.append(np.mean(selected / selected_maximum, axis=0))
+    ordered_windows = tuple(state.config.windows)
+    short = per_window[ordered_windows[0]]
+    long = per_window[ordered_windows[-1]]
+    component_keys = ("position", "pair", "sum", "span")
+    shape_names = tuple(classify_digit_shape(candidate) for candidate in parsed)
+    candidate_sums = candidate_digits.sum(axis=1).astype(float)
+    candidate_spans = candidate_digits.max(axis=1) - candidate_digits.min(axis=1)
+    is_triple = np.all(candidate_digits == candidate_digits[:, :1], axis=1).astype(
+        float
+    )
+    constraint = (
+        np.maximum(0.0, (np.abs(candidate_sums - 13.5) - 8.0) / 13.5)
+        + is_triple
+        + 0.25 * np.isin(candidate_spans, (0, 9)).astype(float)
+    )
+    frame = pd.DataFrame(
+        {
+            "candidate": texts,
+            "position_frequency": _weighted_window_arrays(
+                per_window, "position", state.config
+            ),
+            "position_omission": np.mean(
+                np.clip(np.vstack(omission_arrays), 0.0, 1.0), axis=0
+            ),
+            "pair_frequency": _weighted_window_arrays(per_window, "pair", state.config),
+            "sum_distribution": _weighted_window_arrays(
+                per_window, "sum", state.config
+            ),
+            "span_distribution": _weighted_window_arrays(
+                per_window, "span", state.config
+            ),
+            "recent_trend": np.mean(
+                np.vstack([short[key] - long[key] for key in component_keys]), axis=0
+            ),
+            "position_trend": short["position"] - long["position"],
+            "pair_trend": short["pair"] - long["pair"],
+            "shape_transition": np.asarray(
+                [shape_transition_map[name] for name in shape_names]
+            ),
+            "shape_recent_deviation": np.asarray(
+                [shape_recent_map[name] for name in shape_names]
+            ),
+            "constraint_penalty": constraint,
         }
-        position_omissions = np.asarray(
-            [current[index, digit] for index, digit in enumerate(candidate)]
-        )
-        omission_by_window = {
-            window: float(
-                np.mean(
-                    [
-                        values[0][index, digit] / values[1][index, digit]
-                        for index, digit in enumerate(candidate)
-                    ]
-                )
-            )
-            for window, values in window_omissions.items()
-        }
-        omission_zscores = np.asarray(
-            [
-                (current[index, digit] - means[index, digit]) / stds[index, digit]
-                for index, digit in enumerate(candidate)
-            ]
-        )
-        rebound = np.log1p(
-            np.minimum(position_omissions, state.config.omission_cap)
-        ) / math.log1p(state.config.omission_cap)
-        ordered_windows = list(state.config.windows)
-        short = per_window[ordered_windows[0]]
-        long = per_window[ordered_windows[-1]]
-        component_keys = ("position", "pair", "sum", "span", "shape")
-        component_trends = {
-            key: float(short[key] - long[key]) for key in component_keys
-        }
-        trend_30_300_by_key = {
-            key: _trend_value(per_window, key, 30, 300) for key in component_keys
-        }
-        trend_50_all_by_key = {
-            key: _trend_value(per_window, key, 50, "all") for key in component_keys
-        }
-        ratio_by_key: dict[str, float] = {}
-        for key in component_keys:
-            if 30 in per_window and 300 in per_window:
-                # 窗口特征本身是 log 概率；两者相减即 log(rate30/rate300)。
-                ratio_by_key[key] = float(per_window[30][key]) - float(
-                    per_window[300][key]
-                )
-            else:
-                ratio_by_key[key] = 0.0
-        regime_gaps = {
-            f"regime_gap_{window}_all": float(
-                np.mean(
-                    [
-                        _trend_value(per_window, key, window, "all")
-                        for key in component_keys
-                    ]
-                )
-            )
-            for window in (50, 100, 150)
-        }
-        latest = state.latest_numbers
-        latest_distance = (
-            0.0
-            if latest is None
-            else sum(abs(left - right) for left, right in zip(candidate, latest)) / 27.0
-        )
-        repeated_digits = (
-            0 if latest is None else len(set(candidate) & set(latest)) / 3.0
-        )
-        same_position = (
-            0
-            if latest is None
-            else sum(left == right for left, right in zip(candidate, latest)) / 3.0
-        )
-        constraint = (
-            max(0.0, (abs(float(sum(candidate)) - 13.5) - 8.0) / 13.5)
-            + float(len(set(candidate)) == 1)
-            + 0.25 * float(max(candidate) - min(candidate) in {0, 9})
-        )
-        item: dict[str, object] = {
-            "candidate": text,
-            "digit_0": candidate[0],
-            "digit_1": candidate[1],
-            "digit_2": candidate[2],
-            **pattern,
-            "position_frequency": float(
-                _weighted_window_mean(per_window, "position", state.config)
-            ),
-            "position_omission": float(
-                np.mean(
-                    [np.clip(value, 0.0, 1.0) for value in omission_by_window.values()]
-                )
-            ),
-            "pair_frequency": float(
-                _weighted_window_mean(per_window, "pair", state.config)
-            ),
-            "shape_distribution": float(
-                _weighted_window_mean(per_window, "shape", state.config)
-            ),
-            "sum_distribution": float(
-                _weighted_window_mean(per_window, "sum", state.config)
-            ),
-            "span_distribution": float(
-                _weighted_window_mean(per_window, "span", state.config)
-            ),
-            "parity_bigsmall": float(
-                _weighted_window_mean(per_window, "parity_bigsmall", state.config)
-            ),
-            "recent_trend": float(np.mean([short[key] - long[key] for key in short])),
-            "position_trend": component_trends["position"],
-            "pair_trend": component_trends["pair"],
-            "sum_trend": component_trends["sum"],
-            "span_trend": component_trends["span"],
-            "shape_trend": component_trends["shape"],
-            "trend_30_300": float(np.mean(list(trend_30_300_by_key.values()))),
-            "trend_50_all": float(np.mean(list(trend_50_all_by_key.values()))),
-            "trend_ratio_30_300": float(np.mean(list(ratio_by_key.values()))),
-            **{
-                f"{key}_trend_30_300": value
-                for key, value in trend_30_300_by_key.items()
-            },
-            **{
-                f"{key}_trend_50_all": value
-                for key, value in trend_50_all_by_key.items()
-            },
-            **{
-                f"{key}_trend_ratio_30_300": value
-                for key, value in ratio_by_key.items()
-            },
-            **regime_gaps,
-            "latest_distance": -latest_distance,
-            "repeat_latest": float(np.mean([repeated_digits, same_position])),
-            "omission_rebound": float(
-                np.mean(rebound) + 0.05 * np.mean(np.clip(omission_zscores, -3, 3))
-            ),
-            "constraint_penalty": float(constraint),
-        }
-        for window, values in per_window.items():
-            label = str(window)
-            for key, value in values.items():
-                item[f"{key}_{label}"] = value
-            item[f"omission_{label}"] = omission_by_window[window]
-        rows.append(item)
-    frame = pd.DataFrame(rows)
+    )
     for name in FEATURE_NAMES:
         values = frame[name].to_numpy(dtype=float)
         if name == "constraint_penalty":
             frame[name] = np.maximum(values, 0.0)
         elif name in {
             "position_omission",
-            "omission_rebound",
-            "repeat_latest",
-            "latest_distance",
+            "shape_recent_deviation",
         }:
             frame[name] = np.clip(values, -1.0, 1.5)
         else:

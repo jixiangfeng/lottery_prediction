@@ -3,10 +3,26 @@
 - 当前预测架构只支持福彩3D和排列三的三位数字空间 `000–999`。
 - 排列五不由 learned ranker 支持，CLI 必须明确拒绝。
 - 每个目标期只能读取目标期以前的开奖历史。
-- Search 用于参数探索，Validation 用于参数选择，Frozen Test 只在参数锁定后评估。
+- Search 用于参数探索，Validation 只确认 Search 选定配置，Frozen Test 只在参数锁定后评估。
 - Frozen Test 不得用于特征、窗口、权重、温度、候选预算、目标 profile 或 gate 调整。
 - 全历史只作为弱长期先验，近期窗口默认具有更高权重。
 - 候选数量是成本；命中率必须与同成本随机基线一起解释。
+- `all_hit_only` 只用于 Search/Validation 开发：三个 profile 共用已构建目标特征，分别保存参数和预算曲线。
+- 位置池覆盖按每位概率质量固定 Top3/5/7/10 计算，不得使用直选 Top50 中“出现过即覆盖”的宽池。
+- 候选预算只由 Search 曲线选择；Validation 只验证预选预算，不能反向选择。
+- 多轮开发时，最新 500 期固定为 Frozen Test；此前全部历史按时间切分为 Search 和 Validation，不把 Frozen 段用于调参。
+- v4主特征窗口固定为目标期之前最近20/50/150期，默认half-life=50；全量历史主要用于产生更多walk-forward目标期和稳定性验证。
+- 相邻目标期使用150期滚动状态；Search目标矩阵以数据指纹、配置和目标索引为键保存为NPZ，允许安全断点恢复。
+- 固定基线矩阵必须包含uniform、形态先验/转移、和值跨度和20/50/150/all位置频率。
+- direct、group、position使用独立实战状态；任何分项未通过自己的Frozen证据时不得借用其他分项激活。
+- 日报写入`reports/daily/<lottery>/`，策略迁移写入`reports/state/strategy_registry.json`。
+- 在线自适应开发默认外层连续预测最后500个开发期、每期更新统计、每10期重选参数；每次重选只读取块起点之前最近500期。
+- 概率必须支持`P_final=λP_model+(1-λ)P_uniform`；`λ=0`表示无信号并强制放弃主推荐。
+- 普通训练默认使用`research_calibrated`平滑目标；hit-only只能作为显式对照，不能单独准入。
+- 可预测性审计固定使用开发区、499次置换、10期配对块和Benjamini-Hochberg FDR 5%；只有LogLoss/Brier同时改善并通过校正的简单基线才算发现信号。
+- 在线梯度实验固定先预测后更新，学习率/λ每10期只由此前300期Search选择、此前100期Validation确认；任何当期结果只能影响下一期及以后。
+- 稀疏收缩v4对`position_frequency`使用10倍L2，对和值/数字对/趋势组使用5倍L2，形态特征固定为0；因为设计来自已看过的开发结果，旧开发区输出只能标记为探索性证据。
+- 参数搜索目标预算必须与待锁定预算一致（例如直选 Top50 必须用 `direct_objective_top_k=50` 搜索），不得用 Top10/Top5 参数事后宣称 Top50/Top3有效。
 - `sum_prob` 是组选概率；`max_perm` 与 `mean_top_perm` 是聚合分数。
 - 历史 v1、概率 v2、在线概率 v3 不再提供代码或兼容接口。
 - 彩票结果高度随机；历史评估不保证未来命中、中奖或盈利。

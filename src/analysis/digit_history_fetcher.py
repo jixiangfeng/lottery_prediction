@@ -18,6 +18,7 @@ FC3D_API_URL = "https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDra
 PL3_API_URL = "https://jc.zhcw.com/port/client_json.php"
 OFFICIAL_HOSTS = frozenset({"www.cwl.gov.cn", "jc.zhcw.com"})
 _PAGE_SIZE = 1000
+_ALL_HISTORY_REQUEST_SIZE = 10_000
 _USER_AGENT = "Mozilla/5.0 (compatible; lottery-prediction/1.0; +offline-research)"
 
 
@@ -99,7 +100,7 @@ def _validated_draw(
 
 
 def _deduplicate_and_limit(
-    draws: list[DigitHistoryDraw], periods: int
+    draws: list[DigitHistoryDraw], periods: int | None
 ) -> list[DigitHistoryDraw]:
     by_issue: dict[str, DigitHistoryDraw] = {}
     for draw in draws:
@@ -108,16 +109,24 @@ def _deduplicate_and_limit(
             raise ValueError(f"官方数据同一期号号码冲突：{draw.issue}")
         by_issue[draw.issue] = draw
     ordered = sorted(by_issue.values(), key=lambda item: int(item.issue), reverse=True)
-    if len(ordered) < periods:
-        raise ValueError(f"官方数据不足：请求 {periods} 期，只获得 {len(ordered)} 期")
-    return ordered[:periods]
+    if periods is not None:
+        if len(ordered) < periods:
+            raise ValueError(
+                f"官方数据不足：请求 {periods} 期，只获得 {len(ordered)} 期"
+            )
+        ordered = ordered[:periods]
+    return ordered
 
 
-def _fetch_fc3d(periods: int, timeout: float, retries: int) -> list[DigitHistoryDraw]:
+def _fetch_fc3d(
+    periods: int | None, timeout: float, retries: int
+) -> list[DigitHistoryDraw]:
     draws: list[DigitHistoryDraw] = []
-    total = periods
+    total = periods or 1
     page_no = 1
-    while len(draws) < periods and (page_no - 1) * _PAGE_SIZE < total:
+    while (periods is None or len(draws) < periods) and (
+        page_no - 1
+    ) * _PAGE_SIZE < total:
         query = urllib.parse.urlencode(
             {
                 "name": "3d",
@@ -161,16 +170,20 @@ def _fetch_fc3d(periods: int, timeout: float, retries: int) -> list[DigitHistory
     return _deduplicate_and_limit(draws, periods)
 
 
-def _fetch_pl3(periods: int, timeout: float, retries: int) -> list[DigitHistoryDraw]:
+def _fetch_pl3(
+    periods: int | None, timeout: float, retries: int
+) -> list[DigitHistoryDraw]:
     draws: list[DigitHistoryDraw] = []
-    total = periods
+    total = periods or 1
     page_no = 1
-    while len(draws) < periods and (page_no - 1) * _PAGE_SIZE < total:
+    while (periods is None or len(draws) < periods) and (
+        page_no - 1
+    ) * _PAGE_SIZE < total:
         query = urllib.parse.urlencode(
             {
                 "transactionType": "10001001",
                 "lotteryId": "283",
-                "issueCount": periods,
+                "issueCount": periods or _ALL_HISTORY_REQUEST_SIZE,
                 "startIssue": "",
                 "endIssue": "",
                 "startDate": "",
@@ -217,23 +230,23 @@ def _fetch_pl3(periods: int, timeout: float, retries: int) -> list[DigitHistoryD
 def fetch_digit_history(
     lottery: str,
     *,
-    periods: int = 1000,
+    periods: int = 0,
     timeout: float = 20.0,
     retries: int = 3,
 ) -> list[DigitHistoryDraw]:
     """从官方接口抓取福彩3D或排列三历史。
 
-    示例：``fetch_digit_history("fc3d", periods=1000)``。抓取仅在调用本函数时
-    发生，不会由日报或回测流程隐式触发。
+    示例：``fetch_digit_history("fc3d", periods=0)``，其中 ``0`` 表示抓取接口全部历史。
     """
 
     if lottery not in {"fc3d", "pl3"}:
         raise ValueError("官方历史抓取目前只支持 fc3d 或 pl3")
-    if periods <= 0 or timeout <= 0 or retries < 0:
-        raise ValueError("periods、timeout 必须为正数，retries 不得为负数")
+    if periods < 0 or timeout <= 0 or retries < 0:
+        raise ValueError("periods不得为负数，timeout必须为正数，retries不得为负数")
+    requested_periods = periods or None
     if lottery == "fc3d":
-        return _fetch_fc3d(periods, timeout, retries)
-    return _fetch_pl3(periods, timeout, retries)
+        return _fetch_fc3d(requested_periods, timeout, retries)
+    return _fetch_pl3(requested_periods, timeout, retries)
 
 
 def write_digit_history_csv(

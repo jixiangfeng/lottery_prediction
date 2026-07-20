@@ -17,10 +17,16 @@ from src.analysis.digit_data import (
     normalize_digit_dataframe,
     sort_digit_dataframe_by_issue,
 )
+from src.analysis.digit_evaluation import (
+    CalibrationBin,
+    evaluate_binary_calibration,
+)
 from src.analysis.digit_learned_features import (
     LearnedFeatureConfig,
+    LearnedHistoryState,
     build_candidate_features,
     build_history_state,
+    iter_rolling_history_states,
 )
 from src.analysis.digit_learned_ranker import (
     LearnedRankerParams,
@@ -56,6 +62,8 @@ class LearnedWalkForwardPeriod:
     group_random_probability: float
     group_rank: int = 221
     position_ranks: tuple[int, int, int] = (11, 11, 11)
+    top_probability: float = 0.0
+    top_hit: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -87,6 +95,12 @@ class LearnedRankerReport:
     stable_blocks: int
     gate_passed: bool
     gate_reasons: tuple[str, ...]
+    expected_calibration_error: float = 0.0
+    calibration: tuple[CalibrationBin, ...] = ()
+    position_hits: int = 0
+    position_hit_rate: float = 0.0
+    position_random_probability: float = 0.0
+    position_p_value: float = 1.0
     csv_sha256: str | None = None
     canonical_data_sha256: str | None = None
     source_fingerprint: str | None = None
@@ -99,6 +113,7 @@ class LearnedRankerReport:
             mean_log_loss=self.mean_log_loss,
             direct_p_value=self.direct_p_value,
             group_p_value=self.group_p_value,
+            position_p_value=self.position_p_value,
             stable_blocks=self.stable_blocks,
         )
         payload = {
@@ -130,8 +145,14 @@ class LearnedRankerReport:
                 "groupHitRate": self.group_hit_rate,
                 "groupRandomHitRate": self.group_random_hit_rate,
                 "groupPValue": self.group_p_value,
+                "positionHits": self.position_hits,
+                "positionHitRate": self.position_hit_rate,
+                "positionRandomProbability": self.position_random_probability,
+                "positionPValue": self.position_p_value,
                 "blockMeanRanks": list(self.block_mean_ranks),
                 "stableBlocks": self.stable_blocks,
+                "expectedCalibrationError": self.expected_calibration_error,
+                "calibration": [item.to_dict() for item in self.calibration],
                 "directCandidateBudgetCurve": build_candidate_budget_curve(
                     self.periods
                 ),
@@ -141,6 +162,8 @@ class LearnedRankerReport:
                 ),
             },
             "gate": gate,
+            "gatePassed": self.gate_passed,
+            "gateReasons": list(self.gate_reasons),
             "disclaimer": "开奖结果具有随机性；评估不构成预测有效、中奖或盈利承诺。",
         }
         payload["reportFingerprint"] = payload_fingerprint(payload)
@@ -153,10 +176,11 @@ def _period(
     rule: LotteryRule,
     params: LearnedRankerParams,
     feature_config: LearnedFeatureConfig,
+    history_state: LearnedHistoryState | None = None,
 ) -> LearnedWalkForwardPeriod:
     target = chronological.iloc[index]
     target_issue = str(target["期数"])
-    state = build_history_state(
+    state = history_state or build_history_state(
         chronological.iloc[:index], rule, feature_config, target_issue=target_issue
     )
     features = build_candidate_features(state, rule)
@@ -167,8 +191,12 @@ def _period(
     )
     texts = features["candidate"].astype(str).tolist()
     scores = score_candidates(features, params)
-    probabilities = probabilities_from_scores(scores, temperature=params.temperature)
-    order = rank_candidate_indices(scores, texts)
+    probabilities = probabilities_from_scores(
+        scores,
+        temperature=params.temperature,
+        uniform_shrinkage=params.uniform_shrinkage,
+    )
+    order = rank_candidate_indices(probabilities, texts)
     actual_text = "".join(str(int(target[column])) for column in rule.number_columns)
     candidate_indices = {text: position for position, text in enumerate(texts)}
     try:
@@ -217,6 +245,8 @@ def _period(
         group_random_probability=sum(item.permutations for item in top_groups) / 1000.0,
         group_rank=group_rank,
         position_ranks=(position_ranks[0], position_ranks[1], position_ranks[2]),
+        top_probability=float(probabilities[int(order[0])]),
+        top_hit=int(order[0]) == actual_index,
     )
 
 
@@ -225,6 +255,7 @@ def _gate_reasons(
     mean_log_loss: float,
     direct_p_value: float,
     group_p_value: float,
+    position_p_value: float,
     stable_blocks: int,
 ) -> tuple[str, ...]:
     reasons = []
@@ -236,6 +267,8 @@ def _gate_reasons(
         reasons.append("直选 TopK 单侧 p 值未小于 0.05")
     if group_p_value >= 0.05:
         reasons.append("组选 TopK 单侧 p 值未小于 0.05")
+    if position_p_value >= 0.05:
+        reasons.append("位置池 TopK 单侧 p 值未小于 0.05")
     if stable_blocks < 2:
         reasons.append("至少三个时间块中未达到两个稳定优势块")
     return tuple(reasons)
@@ -247,6 +280,7 @@ def build_gate_result(
     mean_log_loss: float,
     direct_p_value: float,
     group_p_value: float,
+    position_p_value: float,
     stable_blocks: int,
 ) -> dict[str, Any]:
     """拆分公共概率/稳定性、直选命中和组选命中闸门。"""
@@ -262,18 +296,28 @@ def build_gate_result(
         ["直选 TopK 单侧 p 值未小于 0.05"] if direct_p_value >= 0.05 else []
     )
     group_reasons = ["组选 TopK 单侧 p 值未小于 0.05"] if group_p_value >= 0.05 else []
+    position_reasons = (
+        ["位置池 TopK 单侧 p 值未小于 0.05"] if position_p_value >= 0.05 else []
+    )
     activation = resolve_activation(
         common_passed=not common_reasons,
         direct_passed=not direct_reasons,
         group_passed=not group_reasons,
+        position_passed=not position_reasons,
     )
     return {
         "passed": activation["overallPassed"],
         "semantics": activation["overallSemantics"],
-        "reasons": [*common_reasons, *direct_reasons, *group_reasons],
+        "reasons": [
+            *common_reasons,
+            *direct_reasons,
+            *group_reasons,
+            *position_reasons,
+        ],
         "common": {"passed": not common_reasons, "reasons": common_reasons},
         "direct": {"passed": not direct_reasons, "reasons": direct_reasons},
         "group": {"passed": not group_reasons, "reasons": group_reasons},
+        "position": {"passed": not position_reasons, "reasons": position_reasons},
         "activation": activation,
     }
 
@@ -368,9 +412,19 @@ def run_learned_ranker_walk_forward(
     if not indices:
         raise ValueError("冻结测试段不能为空")
     effective_features = feature_config or LearnedFeatureConfig()
+    states = iter_rolling_history_states(
+        chronological, rule, indices, effective_features
+    )
     periods = tuple(
-        _period(chronological, index, rule, params, effective_features)
-        for index in indices
+        _period(
+            chronological,
+            index,
+            rule,
+            params,
+            effective_features,
+            history_state=state,
+        )
+        for index, state in zip(indices, states)
     )
     direct_hits = sum(item.direct_hit for item in periods)
     group_hits = sum(item.group_hit for item in periods)
@@ -378,6 +432,16 @@ def run_learned_ranker_walk_forward(
     direct_p = float(binom.sf(direct_hits - 1, len(periods), direct_probability))
     group_probabilities = [item.group_random_probability for item in periods]
     group_p = float(poisson_binomial_right_tail(group_probabilities, group_hits))
+    position_observations = len(periods) * 3
+    position_hits = sum(
+        rank <= params.position_pool_size
+        for item in periods
+        for rank in item.position_ranks
+    )
+    position_probability = params.position_pool_size / 10.0
+    position_p = float(
+        binom.sf(position_hits - 1, position_observations, position_probability)
+    )
     blocks = [
         block
         for block in np.array_split(
@@ -390,7 +454,18 @@ def run_learned_ranker_walk_forward(
     stable_blocks = sum(value < 500.5 for value in block_means)
     mean_rank = float(np.mean([item.actual_rank for item in periods]))
     mean_log_loss = float(np.mean([item.log_loss for item in periods]))
-    reasons = _gate_reasons(mean_rank, mean_log_loss, direct_p, group_p, stable_blocks)
+    reasons = _gate_reasons(
+        mean_rank,
+        mean_log_loss,
+        direct_p,
+        group_p,
+        position_p,
+        stable_blocks,
+    )
+    calibration, expected_calibration_error = evaluate_binary_calibration(
+        [item.top_probability for item in periods],
+        [item.top_hit for item in periods],
+    )
     return LearnedRankerReport(
         rule_code=rule.code,
         display_name=rule.display_name,
@@ -418,6 +493,12 @@ def run_learned_ranker_walk_forward(
         stable_blocks=stable_blocks,
         gate_passed=not reasons,
         gate_reasons=reasons,
+        expected_calibration_error=expected_calibration_error,
+        calibration=calibration,
+        position_hits=position_hits,
+        position_hit_rate=position_hits / position_observations,
+        position_random_probability=position_probability,
+        position_p_value=position_p,
         csv_sha256=csv_sha256,
         canonical_data_sha256=canonical_data_sha256,
         source_fingerprint=source_fingerprint,
@@ -438,11 +519,15 @@ def build_walk_forward_markdown(report: LearnedRankerReport) -> str:
         f"- 冻结测试期数：`{len(report.periods)}`",
         f"- LogLoss：`{report.mean_log_loss:.6f}`（均匀 `{report.uniform_log_loss:.6f}`）",
         f"- Brier：`{report.mean_brier_score:.6f}`（均匀 `{report.uniform_brier_score:.6f}`）",
+        f"- Top-1 ECE：`{report.expected_calibration_error:.6f}`",
         f"- 平均排名：`{report.mean_rank:.2f}`",
         f"- 直选 TopK：`{report.direct_hits}/{len(report.periods)}`，单侧 p=`{report.direct_p_value:.6f}`",
         f"- 组选 TopK：`{report.group_hits}/{len(report.periods)}`，"
         f"逐期精确随机基线 `{report.group_random_hit_rate:.4%}`，"
         f"单侧 p=`{report.group_p_value:.6f}`",
+        f"- 位置池每位 TopK：`{report.position_hits}/{len(report.periods) * 3}`，"
+        f"随机基线 `{report.position_random_probability:.4%}`，"
+        f"单侧 p=`{report.position_p_value:.6f}`",
         f"- 分块平均排名：`{', '.join(f'{value:.2f}' for value in report.block_mean_ranks)}`",
         "",
         "## 闸门",
@@ -479,8 +564,17 @@ def write_walk_forward_report(
     serialized = json.dumps(
         report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
     )
-    _preflight_immutable(markdown_path, markdown, label="冻结评估")
-    _preflight_immutable(json_path, serialized, label="冻结评估")
+    version_suffix = payload_fingerprint(report.to_dict())[:12]
+    for path, content in ((markdown_path, markdown), (json_path, serialized)):
+        try:
+            _preflight_immutable(path, content, label="冻结评估")
+        except FileExistsError:
+            versioned = path.with_name(f"{path.stem}.{version_suffix}{path.suffix}")
+            _preflight_immutable(versioned, content, label="冻结评估")
+            if path == markdown_path:
+                markdown_path = versioned
+            else:
+                json_path = versioned
     _atomic_write(markdown_path, markdown, immutable=True)
     _atomic_write(json_path, serialized, immutable=True)
     return markdown_path, json_path

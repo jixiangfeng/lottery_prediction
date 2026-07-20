@@ -29,9 +29,7 @@ def _write_csv(path: Path, periods: int = 20) -> None:
 
 
 def _daily_json_path(output_dir: Path, issue: str = "2026020") -> Path:
-    matches = sorted(
-        (output_dir / "learned_ranker_v4_daily").glob(f"fc3d*_daily_{issue}.json")
-    )
+    matches = sorted((output_dir / "daily" / "fc3d").glob(f"fc3d*_daily_{issue}.json"))
     assert len(matches) == 1
     return matches[0]
 
@@ -81,6 +79,50 @@ def test_train_cli_records_explicit_frozen_window_and_objective_profile(
     assert metadata["split"] == {"searchEnd": 5, "validationEnd": 10, "testEnd": 20}
     assert metadata["objectiveProfile"] == "direct_focus"
     assert metadata["search"]["objectiveProfile"] == "direct_focus"
+
+
+def test_train_cli_all_hit_profiles_writes_three_parameter_artifacts(tmp_path: Path):
+    csv_path = tmp_path / "fc3d.csv"
+    output_dir = tmp_path / "reports"
+    _write_csv(csv_path, periods=20)
+
+    assert (
+        main(
+            [
+                "train",
+                "--lottery",
+                "fc3d",
+                "--csv",
+                str(csv_path),
+                "--output-dir",
+                str(output_dir),
+                "--frozen-test-periods",
+                "10",
+                "--objective-profile",
+                "all_hit_only",
+                "--smoke",
+            ]
+        )
+        == 0
+    )
+
+    state_dir = output_dir / "state" / "learned_ranker_v4"
+    for profile in ("direct_hit_only", "group_hit_only", "pool_hit_only"):
+        params_path = state_dir / f"fc3d_{profile}_params.json"
+        metadata = json.loads(params_path.read_text(encoding="utf-8"))["metadata"]
+        assert metadata["objectiveProfile"] == profile
+        assert metadata["search"]["objectiveProfile"] == profile
+        curves = metadata["search"]["budgetCurves"]
+        assert set(curves) == {"search", "validation"}
+        assert set(curves["validation"]) == {"direct", "group", "position"}
+        assert curves["validation"]["direct"]["10"]["randomBaseline"] == 0.01
+        assert curves["validation"]["position"]["5"]["randomBaseline"] == 0.5
+        blocks = curves["validation"]["direct"]["10"]["timeBlocks"]
+        assert len(blocks) == 3
+        assert all(
+            {"hits", "observations", "hitRate", "randomBaseline", "lift"} <= set(block)
+            for block in blocks
+        )
 
 
 def test_daily_cli_writes_reproducible_fingerprinted_artifacts(tmp_path: Path):

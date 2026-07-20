@@ -31,46 +31,24 @@ from src.analysis.digit_learned_features import (
     build_history_state,
 )
 from src.analysis.digit_statistics import classify_digit_shape
+from src.analysis.digit_strategy_gate import StrategyStatus
+from src.analysis.digit_strategy_registry import (
+    StrategyRegistryUpdate,
+    update_strategy_registry,
+)
 from src.lotteries.base import LotteryRule
 
 DEFAULT_WEIGHTS = {
     "position_frequency": 1.0,
     "position_omission": 0.15,
     "pair_frequency": 0.45,
-    "shape_distribution": 0.2,
     "sum_distribution": 0.25,
     "span_distribution": 0.2,
-    "parity_bigsmall": 0.15,
     "recent_trend": 0.15,
     "position_trend": 0.05,
     "pair_trend": 0.05,
-    "sum_trend": 0.03,
-    "span_trend": 0.03,
-    "shape_trend": 0.03,
-    "trend_30_300": 0.05,
-    "trend_50_all": 0.05,
-    "trend_ratio_30_300": 0.03,
-    "position_trend_30_300": 0.02,
-    "pair_trend_30_300": 0.02,
-    "sum_trend_30_300": 0.01,
-    "span_trend_30_300": 0.01,
-    "shape_trend_30_300": 0.01,
-    "position_trend_50_all": 0.02,
-    "pair_trend_50_all": 0.02,
-    "sum_trend_50_all": 0.01,
-    "span_trend_50_all": 0.01,
-    "shape_trend_50_all": 0.01,
-    "position_trend_ratio_30_300": 0.01,
-    "pair_trend_ratio_30_300": 0.01,
-    "sum_trend_ratio_30_300": 0.01,
-    "span_trend_ratio_30_300": 0.01,
-    "shape_trend_ratio_30_300": 0.01,
-    "regime_gap_50_all": 0.04,
-    "regime_gap_100_all": 0.03,
-    "regime_gap_150_all": 0.02,
-    "latest_distance": 0.05,
-    "repeat_latest": 0.05,
-    "omission_rebound": 0.1,
+    "shape_transition": 0.0,
+    "shape_recent_deviation": 0.0,
     "constraint_penalty": -0.25,
 }
 
@@ -81,6 +59,7 @@ class LearnedRankerParams:
 
     weights: Mapping[str, float] = field(default_factory=lambda: dict(DEFAULT_WEIGHTS))
     temperature: float = 1.0
+    uniform_shrinkage: float = 1.0
     direct_top_k: int = 10
     group_top_k: int = 10
     group_aggregation: str = "sum_prob"
@@ -94,6 +73,8 @@ class LearnedRankerParams:
             raise ValueError(f"存在未知特征权重：{sorted(unknown)}")
         if self.temperature <= 0:
             raise ValueError("softmax temperature 必须大于零")
+        if not 0.0 <= self.uniform_shrinkage <= 1.0:
+            raise ValueError("均匀收缩系数必须位于 0..1")
         if self.direct_top_k <= 0 or self.group_top_k <= 0:
             raise ValueError("TopK 必须为正整数")
         if self.direct_top_k > 1000:
@@ -124,6 +105,7 @@ class LearnedRankerParams:
                 for key, value in dict(payload["weights"]).items()
             },
             temperature=float(payload.get("temperature", 1.0)),
+            uniform_shrinkage=float(payload.get("uniform_shrinkage", 1.0)),
             direct_top_k=int(payload.get("direct_top_k", 10)),
             group_top_k=int(payload.get("group_top_k", 10)),
             group_aggregation=str(payload.get("group_aggregation", "sum_prob")),
@@ -255,20 +237,31 @@ def _feature_config_from_metadata(
 
 
 def resolve_activation(
-    *, common_passed: bool, direct_passed: bool, group_passed: bool
+    *,
+    common_passed: bool,
+    direct_passed: bool,
+    group_passed: bool,
+    position_passed: bool,
 ) -> dict[str, Any]:
-    """按公共闸门与分项命中闸门解析可启用部分。"""
+    """按公共闸门与直选、组选、位置池三个独立闸门解析状态。"""
 
     active_direct = bool(common_passed and direct_passed)
     active_group = bool(common_passed and group_passed)
+    active_position = bool(common_passed and position_passed)
     return {
         "commonPassed": bool(common_passed),
         "directPassed": bool(direct_passed),
         "groupPassed": bool(group_passed),
+        "positionPassed": bool(position_passed),
         "activeDirect": active_direct,
         "activeGroup": active_group,
-        "overallPassed": bool(common_passed and direct_passed and group_passed),
-        "overallSemantics": "commonPassed && directPassed && groupPassed（兼容字段）",
+        "activePosition": active_position,
+        "overallPassed": bool(
+            common_passed and direct_passed and group_passed and position_passed
+        ),
+        "overallSemantics": (
+            "commonPassed && directPassed && groupPassed && positionPassed"
+        ),
     }
 
 
@@ -279,6 +272,7 @@ def partition_plan_by_activation(
 
     active_direct = bool(activation.get("activeDirect", False))
     active_group = bool(activation.get("activeGroup", False))
+    active_position = bool(activation.get("activePosition", False))
     direct = list(plan.get("directCandidates", []))
     groups = list(plan.get("groupCandidates", []))
     position_pools = list(plan.get("positionPools", []))
@@ -288,16 +282,17 @@ def partition_plan_by_activation(
         {
             "activeDirect": active_direct,
             "activeGroup": active_group,
+            "activePosition": active_position,
             "mainRecommendation": {
                 "directCandidates": direct if active_direct else [],
                 "groupCandidates": groups if active_group else [],
-                "positionPools": position_pools if active_direct else [],
+                "positionPools": position_pools if active_position else [],
                 "groupDigitPool": group_pool if active_group else [],
             },
             "research": {
                 "directCandidates": [] if active_direct else direct,
                 "groupCandidates": [] if active_group else groups,
-                "positionPools": [] if active_direct else position_pools,
+                "positionPools": [] if active_position else position_pools,
                 "groupDigitPool": [] if active_group else group_pool,
             },
         }
@@ -379,13 +374,21 @@ def score_candidates(features: pd.DataFrame, params: LearnedRankerParams) -> np.
     return scores
 
 
-def probabilities_from_scores(scores: np.ndarray, *, temperature: float) -> np.ndarray:
-    """稳定 softmax；概率仅代表归一化排序质量。"""
+def probabilities_from_scores(
+    scores: np.ndarray, *, temperature: float, uniform_shrinkage: float = 1.0
+) -> np.ndarray:
+    """稳定softmax并向均匀分布收缩；λ=0表示模型没有可用信号。"""
 
     values = np.asarray(scores, dtype=float) / float(temperature)
+    if values.size == 0:
+        raise ValueError("概率候选不能为空")
+    if not 0.0 <= uniform_shrinkage <= 1.0:
+        raise ValueError("均匀收缩系数必须位于 0..1")
     shifted = values - float(np.max(values))
     exponentials = np.exp(shifted)
-    return exponentials / float(exponentials.sum())
+    model = exponentials / float(exponentials.sum())
+    uniform = np.full(values.shape, 1.0 / values.size, dtype=float)
+    return uniform_shrinkage * model + (1.0 - uniform_shrinkage) * uniform
 
 
 def rank_candidate_indices(scores: np.ndarray, candidates: Sequence[str]) -> np.ndarray:
@@ -466,8 +469,12 @@ def build_learned_ranker_plan(
     if len(set(candidates)) != len(candidates):
         raise ValueError("候选号码不得重复")
     scores = score_candidates(features, params)
-    probabilities = probabilities_from_scores(scores, temperature=params.temperature)
-    order = rank_candidate_indices(scores, candidates)
+    probabilities = probabilities_from_scores(
+        scores,
+        temperature=params.temperature,
+        uniform_shrinkage=params.uniform_shrinkage,
+    )
+    order = rank_candidate_indices(probabilities, candidates)
     direct = []
     for index in order[: params.direct_top_k]:
         contributions = {
@@ -562,10 +569,15 @@ def learned_ranker_source_fingerprint() -> str:
     paths = [
         directory / "digit_data.py",
         directory / "digit_statistics.py",
+        directory / "digit_full_history_shadow.py",
         directory / "digit_learned_features.py",
         directory / "digit_learned_ranker.py",
+        directory / "digit_learned_ranker_adaptive.py",
         directory / "digit_learned_ranker_search.py",
         directory / "digit_learned_ranker_walk_forward.py",
+        directory / "digit_online_gradient.py",
+        directory / "digit_predictability_audit.py",
+        directory / "digit_sparse_frozen.py",
         lotteries_directory / "base.py",
         lotteries_directory / "fc3d.py",
         lotteries_directory / "pl3.py",
@@ -776,6 +788,11 @@ def _daily_markdown(payload: Mapping[str, Any]) -> str:
         if plan.get("activeGroup")
         else "## 研究分区（组选，未启用）"
     )
+    position_heading = (
+        "## 主推荐（位置池）"
+        if plan.get("activePosition")
+        else "## 研究分区（位置池，未启用）"
+    )
     lines = [
         f"# {payload['displayName']} learned_ranker_v4 日报",
         "",
@@ -833,7 +850,7 @@ def _daily_markdown(payload: Mapping[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## 复式池",
+            position_heading,
             "",
             f"- 位置复式池：`{position_pools}`，共 `{direct_count}` 注，按每注 2 元为 `{direct_count * 2}` 元。",
             f"- 组选数字池：`{''.join(str(value) for value in plan['groupDigitPool'])}`。",
@@ -876,7 +893,10 @@ def _validate_frozen_evaluation(
     if not path.exists():
         return (
             resolve_activation(
-                common_passed=False, direct_passed=False, group_passed=False
+                common_passed=False,
+                direct_passed=False,
+                group_passed=False,
+                position_passed=False,
             ),
             None,
             validation,
@@ -922,7 +942,10 @@ def _validate_frozen_evaluation(
     except (json.JSONDecodeError, TypeError, ValueError, KeyError):
         return (
             resolve_activation(
-                common_passed=False, direct_passed=False, group_passed=False
+                common_passed=False,
+                direct_passed=False,
+                group_passed=False,
+                position_passed=False,
             ),
             evaluation_fingerprint,
             validation,
@@ -945,13 +968,14 @@ def _validate_frozen_evaluation(
         common_passed = bool(evaluation_activation.get("commonPassed", False))
         direct_passed = bool(evaluation_activation.get("directPassed", False))
         group_passed = bool(evaluation_activation.get("groupPassed", False))
+        position_passed = bool(evaluation_activation.get("positionPassed", False))
     else:
-        legacy_passed = bool(gate_payload.get("passed", False))
-        common_passed = direct_passed = group_passed = legacy_passed
+        common_passed = direct_passed = group_passed = position_passed = False
     activation = resolve_activation(
         common_passed=bool(common_passed and evidence_valid),
         direct_passed=bool(direct_passed and evidence_valid),
         group_passed=bool(group_passed and evidence_valid),
+        position_passed=bool(position_passed and evidence_valid),
     )
     validation = {
         "exists": True,
@@ -1054,15 +1078,39 @@ def generate_learned_ranker_daily(
         source_fingerprint=source_fingerprint,
         canonical_data_sha256=frozen_data_canonical_sha256,
     )
+    no_signal = params.uniform_shrinkage <= 0.0
+    if no_signal:
+        activation = resolve_activation(
+            common_passed=False,
+            direct_passed=False,
+            group_passed=False,
+            position_passed=False,
+        )
+        evaluation_validation = {
+            **evaluation_validation,
+            "valid": False,
+            "abstained": True,
+        }
+    abstention_reason = "均匀收缩λ=0：模型无可确认信号" if no_signal else None
     gate_passed = bool(activation["overallPassed"])
-    if activation["activeDirect"] and activation["activeGroup"]:
-        mode = "直选与组选冻结测试闸门已通过"
-    elif activation["activeDirect"]:
-        mode = "仅直选启用；组选保持研究"
-    elif activation["activeGroup"]:
-        mode = "仅组选启用；直选保持研究"
-    else:
-        mode = "研究模式，不接入主推荐"
+    active_labels = [
+        label
+        for enabled, label in (
+            (activation["activeDirect"], "直选"),
+            (activation["activeGroup"], "组选"),
+            (activation["activePosition"], "位置池"),
+        )
+        if enabled
+    ]
+    mode = (
+        "本期无可确认预测信号，已放弃主推荐"
+        if no_signal
+        else (
+            f"已启用：{'、'.join(active_labels)}；其余保持研究"
+            if active_labels
+            else "研究模式，不接入主推荐"
+        )
+    )
     experiment_id = str(
         params_metadata.get(
             "experimentId", f"learned_ranker_v4_{rule.code}_{params.random_seed}"
@@ -1094,9 +1142,14 @@ def generate_learned_ranker_daily(
         "immutable": True,
         "historyPeriods": len(state.numbers),
         "mode": mode,
+        "abstained": no_signal,
+        "noSignal": no_signal,
+        "abstentionReason": abstention_reason,
+        "uniformShrinkage": params.uniform_shrinkage,
         "gatePassed": gate_passed,
         "directPassed": bool(activation["directPassed"]),
         "groupPassed": bool(activation["groupPassed"]),
+        "positionPassed": bool(activation["positionPassed"]),
         "activation": activation,
         "csvSha256": file_sha256(csv_path),
         "canonicalDataSha256": canonical_data_sha256,
@@ -1117,10 +1170,45 @@ def generate_learned_ranker_daily(
         "plan": partition_plan_by_activation(plan.to_dict(), activation),
         "disclaimer": "开奖结果具有随机性；不宣称预测有效，不保证中奖或盈利。",
     }
+    registry_path = report_dir / "state" / "strategy_registry.json"
+    strategy_statuses: dict[str, str] = {}
+    for output_kind, activation_key in (
+        ("direct", "activeDirect"),
+        ("group", "activeGroup"),
+        ("position", "activePosition"),
+    ):
+        requested_status = (
+            StrategyStatus.ACTIVE
+            if activation[activation_key]
+            else StrategyStatus.RESEARCH
+        )
+        strategy_id = f"{experiment_id}:{rule.code}:{output_kind}"
+        registry = update_strategy_registry(
+            registry_path,
+            StrategyRegistryUpdate(
+                strategy_id=strategy_id,
+                lottery=rule.code,
+                output_kind=output_kind,
+                requested_status=requested_status,
+                reasons=(
+                    ("独立冻结闸门通过",)
+                    if requested_status is StrategyStatus.ACTIVE
+                    else ("独立冻结闸门未通过或证据无效",)
+                ),
+                data_fingerprint=frozen_data_canonical_sha256,
+                params_fingerprint=current_params_fingerprint,
+                source_fingerprint=source_fingerprint,
+                occurred_at=str(payload["generatedAt"]),
+            ),
+        )
+        entries = dict(registry["entries"])
+        strategy_statuses[output_kind] = str(dict(entries[strategy_id])["status"])
+    payload["strategyRegistry"] = str(registry_path.relative_to(report_dir))
+    payload["strategyStatuses"] = strategy_statuses
     payload["candidates"] = payload["plan"]
     payload["snapshotFingerprint"] = payload_fingerprint(payload)
     serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
-    daily_dir = report_dir / "learned_ranker_v4_daily"
+    daily_dir = report_dir / "daily" / rule.code
     daily_stem = f"{rule.code}{artifact_segment}_daily_{state.history_end_issue}"
     markdown_path = daily_dir / f"{daily_stem}.md"
     json_path = daily_dir / f"{daily_stem}.json"

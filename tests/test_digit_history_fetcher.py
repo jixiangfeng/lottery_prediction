@@ -102,5 +102,5 @@ def test_write_digit_history_csv_preserves_leading_zero(tmp_path):
 def test_fetcher_rejects_invalid_requests():
     with pytest.raises(ValueError, match="只支持"):
         fetch_digit_history("pl5", periods=10)
-    with pytest.raises(ValueError, match="必须为正数"):
-        fetch_digit_history("fc3d", periods=0)
+    with pytest.raises(ValueError, match="不得为负数"):
+        fetch_digit_history("fc3d", periods=-1)
