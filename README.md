@@ -99,6 +99,37 @@ python scripts/digit_full_history_shadow.py --lottery pl3 --csv data/pl3/officia
 
 该状态从第151期开始连续更新全部候选，使用20/50/150/300/500期窗口（长期窗口低权重）和300期权重半衰，仅保存最终权重、最近400期校准指标及下一期研究Top50。输出以原子只写方式锁定，正式推荐保持关闭；新的独立验证固定为锁定之后未来500期，历史中不得另挑500期冒充Frozen。
 
+历史稳健性可使用固定规则扫描全部完整非重叠500期块：
+
+```bash
+python scripts/digit_historical_blocks.py --lottery fc3d --csv data/fc3d/official_history.csv --output reports/retrospective/historical_blocks_v4_fc3d.json
+```
+
+该回测从首次具备400期Search/Validation历史后开始，覆盖所有完整块，不允许挑块。当前14块/7000期结果：`fc3d` Top50为`346/7000=4.94%`（`p=0.5945`），`pl3`为`367/7000=5.24%`（`p=0.1824`）；两个彩种均为`0/14`块同时通过LogLoss、Brier与Top50显著性，只能作为回溯稳健性证据。
+
+非线性挑战模型使用三个LightGBM 10分类器，不使用MLForecast连续回归：
+
+```bash
+brew install libomp  # macOS首次运行
+python scripts/digit_lightgbm_challenger.py --lottery fc3d --csv data/fc3d/official_history.csv --output reports/challenger/lightgbm_position_v1_fc3d.json
+```
+
+模型使用521个严格prior-only特征（10期One-Hot滞后、20/50/150/300/500期位置频率、遗漏、上一期和值/跨度/形态），每个外层500期块只用此前500期内部Validation从3个强正则树配置和`0.25/0.5/0.75`均匀收缩中选一组。12块/6000期结果：`fc3d` Top50为`282/6000=4.70%`（`p=0.8639`），`pl3`为`294/6000=4.90%`（`p=0.6471`）；两者LogLoss/Brier均差于均匀，联合通过块均为`0/12`，因此关闭该挑战模型，不继续用同一历史调参。
+
+稀疏v4.1使用`30% LogLoss + 70% Top50边界排序`、FTRL-Proximal逐特征自适应更新和三个在线Hedge专家：
+
+```bash
+python scripts/digit_rank_ftrl.py --lottery fc3d --csv data/fc3d/official_history.csv --output reports/challenger/rank_ftrl_v4_1_fc3d.json
+```
+
+14块/7000期结果：`fc3d`为`359/7000=5.13%`（`p=0.3183`，稳定块`8/14`，联合通过`1/14`），`pl3`为`368/7000=5.26%`（`p=0.1684`，稳定块`9/14`，联合通过`0/14`）。相较旧稀疏v4排名略有改善，但未达到预注册`10/14`稳定块或总体显著性；专家权重接近均分且动态λ均值仅约`0.31%/0.06%`，模型几乎退回均匀，因此保持研究关闭状态。
+
+v4.1归因报告同时给出实际号码排名区间、与Top50边界的精确线性贡献、预测时单特征零化和从头重训消融。预测时零化没有任何跨彩种共同正候选；完整重训进一步证明`position_trend`（fc3d）和`position_omission`（pl3）的表面副作用不成立。仅fc3d删除`sum_distribution`从`359`升至`379/7000=5.41%`，9块改善、4块下降、1块持平，LogLoss/Brier略好，但总体`p=0.0604`且联合通过仅`1/14`，只能作为未来前瞻影子候选；pl3没有通过完整重训的删除候选，共享模型不删除任何特征。
+
+每日输出现在执行强制准入：历史联合闸门失败、动态λ低于5%或Top50豹子超过1个时，设置`abstained=true`和空`userVisibleCandidates`；内部`researchTop50`只保留审计，不得对用户展示。2026-07-20真实重跑中，fc3d因前两项放弃，pl3还触发`triple_concentration`（豹子10/50）并放弃。
+
+v4.1现同时报告直选Top50投影组选和独立组选Top10，随机基线按每组选键的排列数（豹子1、组三3、组六6）逐期加权并用Poisson-binomial检验。7000期中，fc3d投影组选`1349/7000=19.27%`对加权基线`18.73%`（`p=0.1242`），独立Top10为`445/7000=6.36%`对基线`6.00%`（`p=0.1095`）；pl3投影组选`1215/7000=17.36%`对基线`17.35%`（`p=0.4990`），独立Top10为`418/7000=5.97%`对基线`6.00%`（`p=0.5472`）。两个彩种组选联合通过块均为0，组选推荐保持关闭。
+
 三个命中率开发目标可在一次进程中共享目标期特征：
 
 ```bash

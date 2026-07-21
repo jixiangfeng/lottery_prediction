@@ -14,13 +14,16 @@ _THREE_LAYER_SOURCE_FILES = (
     "digit_strategy_gate.py",
     "digit_strategy_registry.py",
     "digit_full_history_shadow.py",
+    "digit_historical_blocks.py",
     "digit_learned_features.py",
+    "digit_lightgbm_challenger.py",
     "digit_learned_ranker.py",
     "digit_learned_ranker_adaptive.py",
     "digit_learned_ranker_search.py",
     "digit_learned_ranker_walk_forward.py",
     "digit_online_gradient.py",
     "digit_predictability_audit.py",
+    "digit_rank_ftrl.py",
     "digit_sparse_frozen.py",
 )
 

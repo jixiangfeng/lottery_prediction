@@ -145,7 +145,7 @@ def _data_sha256(history: pd.DataFrame) -> str:
     return hashlib.sha256(history.to_csv(index=False).encode("utf-8")).hexdigest()
 
 
-def _decay_weights(
+def decay_shadow_weights(
     weights: np.ndarray,
     candidate: OnlineGradientCandidate,
     half_life: float,
@@ -214,7 +214,7 @@ def train_full_history_shadow(
                 learner.candidate,
                 online_config,
             )
-            learner.weights = _decay_weights(
+            learner.weights = decay_shadow_weights(
                 step.weights_after,
                 learner.candidate,
                 config.weight_half_life,
@@ -298,6 +298,7 @@ def write_locked_shadow_state(
 __all__ = [
     "FullHistoryShadowConfig",
     "FullHistoryShadowResult",
+    "decay_shadow_weights",
     "train_full_history_shadow",
     "write_locked_shadow_state",
 ]
