@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from src.analysis.digit_learned_features import (
+    BEHAVIORAL_FEATURE_NAMES,
     LearnedFeatureConfig,
     build_candidate_features,
     build_history_state,
@@ -113,6 +114,66 @@ def test_rolling_history_states_match_independent_rebuilds():
             expected_features.drop(columns="candidate"),
             atol=1e-12,
         )
+
+
+def test_behavioral_context_features_are_prior_only_and_candidate_specific():
+    rule = get_lottery_rule("fc3d")
+    history = pd.DataFrame(
+        {
+            "期数": [str(2026001 + index) for index in range(8)],
+            "百位": [1, 4, 1, 7, 1, 3, 2, 1],
+            "十位": [2, 5, 3, 8, 2, 2, 3, 2],
+            "个位": [3, 6, 2, 9, 3, 1, 1, 3],
+        }
+    )
+    config = LearnedFeatureConfig(windows=(5, "all"))
+    state = build_history_state(history, rule, config)
+
+    core = build_candidate_features(state, rule, candidates=("123", "132", "987"))
+    behavior = build_candidate_features(
+        state,
+        rule,
+        candidates=("123", "132", "987"),
+        include_behavioral_context=True,
+    ).set_index("candidate")
+
+    assert not set(BEHAVIORAL_FEATURE_NAMES).intersection(core.columns)
+    assert set(BEHAVIORAL_FEATURE_NAMES).issubset(behavior.columns)
+    assert (
+        behavior.loc["123", "exact_repeat_pressure"]
+        > behavior.loc["132", "exact_repeat_pressure"]
+    )
+    assert (
+        behavior.loc["123", "group_repeat_pressure"]
+        == behavior.loc["132", "group_repeat_pressure"]
+    )
+    assert behavior.loc["123", "last_position_overlap"] == 1.0
+    assert behavior.loc["132", "last_digit_overlap"] == 1.0
+    assert np.isfinite(behavior[list(BEHAVIORAL_FEATURE_NAMES)].to_numpy()).all()
+
+
+def test_behavioral_context_does_not_read_target_outcome():
+    rule = get_lottery_rule("pl3")
+    history = _history(30)
+    mutated = history.copy()
+    mutated.loc[20, ["百位", "十位", "个位"]] = [9, 9, 9]
+    config = LearnedFeatureConfig(windows=(10, "all"))
+    target_issue = str(history.iloc[20]["期数"])
+
+    original = build_candidate_features(
+        build_history_state(history, rule, config, target_issue=target_issue),
+        rule,
+        candidates=("000", "123", "999"),
+        include_behavioral_context=True,
+    )
+    changed = build_candidate_features(
+        build_history_state(mutated, rule, config, target_issue=target_issue),
+        rule,
+        candidates=("000", "123", "999"),
+        include_behavioral_context=True,
+    )
+
+    pd.testing.assert_frame_equal(original, changed)
 
 
 def test_decay_weight_decreases_monotonically_with_age():

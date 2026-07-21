@@ -49,6 +49,14 @@ FEATURE_NAMES = (
     "shape_recent_deviation",
     "constraint_penalty",
 )
+BEHAVIORAL_FEATURE_NAMES = (
+    "exact_repeat_pressure",
+    "group_repeat_pressure",
+    "last_position_overlap",
+    "last_digit_overlap",
+    "shape_transition_deviation",
+    "shape_run_length",
+)
 
 
 @dataclass(frozen=True)
@@ -399,10 +407,80 @@ def _weighted_window_arrays(
     return np.average(matrix, axis=0, weights=weights)
 
 
+def _behavioral_context_arrays(
+    candidates: np.ndarray,
+    state: LearnedHistoryState,
+) -> dict[str, np.ndarray]:
+    candidate_count = len(candidates)
+    zeros = np.zeros(candidate_count, dtype=float)
+    if not state.numbers:
+        return {name: zeros.copy() for name in BEHAVIORAL_FEATURE_NAMES}
+
+    history = np.asarray(state.numbers, dtype=int)
+    ages = np.arange(len(history), 0, -1, dtype=float)
+    pressure_weights = np.exp(-ages / 50.0)
+    history_exact_codes = history[:, 0] * 100 + history[:, 1] * 10 + history[:, 2]
+    candidate_exact_codes = (
+        candidates[:, 0] * 100 + candidates[:, 1] * 10 + candidates[:, 2]
+    )
+    exact_totals = np.bincount(
+        history_exact_codes, weights=pressure_weights, minlength=1000
+    )
+    exact_pressure = np.log1p(exact_totals[candidate_exact_codes])
+
+    def group_key(row: np.ndarray | tuple[int, int, int]) -> str:
+        return "".join(str(int(value)) for value in sorted(row))
+
+    group_totals: dict[str, float] = {}
+    for row, weight in zip(history, pressure_weights):
+        key = group_key(row)
+        group_totals[key] = group_totals.get(key, 0.0) + float(weight)
+    group_pressure = np.asarray(
+        [math.log1p(group_totals.get(group_key(row), 0.0)) for row in candidates],
+    )
+
+    latest = history[-1]
+    position_overlap = np.mean(candidates == latest, axis=1)
+    latest_counts = np.bincount(latest, minlength=10)
+    candidate_counts = np.stack([np.bincount(row, minlength=10) for row in candidates])
+    digit_overlap = np.minimum(candidate_counts, latest_counts).sum(axis=1) / 3.0
+
+    shape_transition_map, _ = _shape_deviation_maps(state.numbers)
+    candidate_shapes = tuple(
+        classify_digit_shape(tuple(int(value) for value in row)) for row in candidates
+    )
+    transition_deviation = np.clip(
+        np.asarray([shape_transition_map[name] for name in candidate_shapes]),
+        -3.0,
+        3.0,
+    )
+    latest_shape = classify_digit_shape(tuple(int(value) for value in latest))
+    run_length = 0
+    for row in reversed(history):
+        if classify_digit_shape(tuple(int(value) for value in row)) != latest_shape:
+            break
+        run_length += 1
+    run_strength = min(run_length / 20.0, 1.0)
+    shape_run = np.asarray(
+        [run_strength if name == latest_shape else 0.0 for name in candidate_shapes],
+        dtype=float,
+    )
+    return {
+        "exact_repeat_pressure": exact_pressure,
+        "group_repeat_pressure": group_pressure,
+        "last_position_overlap": position_overlap,
+        "last_digit_overlap": digit_overlap,
+        "shape_transition_deviation": transition_deviation,
+        "shape_run_length": shape_run,
+    }
+
+
 def build_candidate_features(
     state: LearnedHistoryState,
     rule: LotteryRule,
     candidates: Sequence[str] | None = None,
+    *,
+    include_behavioral_context: bool = False,
 ) -> pd.DataFrame:
     """为候选生成多窗口、平滑、衰减、遗漏和上期关系特征矩阵。"""
 
@@ -494,4 +572,7 @@ def build_candidate_features(
             frame[name] = np.clip(values, -1.0, 1.5)
         else:
             frame[name] = _robust_z(values)
+    if include_behavioral_context:
+        for name, values in _behavioral_context_arrays(candidate_digits, state).items():
+            frame[name] = values
     return frame

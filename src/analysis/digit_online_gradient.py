@@ -17,6 +17,7 @@ from src.analysis.digit_data import (
     sort_digit_dataframe_by_issue,
 )
 from src.analysis.digit_learned_features import (
+    BEHAVIORAL_FEATURE_NAMES,
     FEATURE_NAMES,
     LearnedFeatureConfig,
     build_candidate_features,
@@ -26,6 +27,7 @@ from src.analysis.digit_learned_ranker import (
     DEFAULT_WEIGHTS,
     rank_candidate_indices,
 )
+from src.analysis.digit_statistics import classify_digit_shape
 from src.lotteries.base import LotteryRule
 
 _UNIFORM_LOG_LOSS = math.log(1000.0)
@@ -57,6 +59,7 @@ class OnlineGradientConfig:
     gradient_clip: float = 1.0
     weight_limit: float = 1.5
     direct_top_k: int = 50
+    feature_names: tuple[str, ...] = FEATURE_NAMES
     feature_l2_multipliers: tuple[tuple[str, float], ...] = _SPARSE_L2_MULTIPLIERS
     zeroed_features: tuple[str, ...] = _SPARSE_ZERO_FEATURES
 
@@ -81,16 +84,23 @@ class OnlineGradientConfig:
             raise ValueError("l2_penalty不得为负")
         if not 1 <= self.direct_top_k <= 1000:
             raise ValueError("direct_top_k必须位于1..1000")
+        available_features = set(FEATURE_NAMES) | set(BEHAVIORAL_FEATURE_NAMES)
+        if not self.feature_names or len(set(self.feature_names)) != len(
+            self.feature_names
+        ):
+            raise ValueError("feature_names必须非空且不得重复")
+        if any(name not in available_features for name in self.feature_names):
+            raise ValueError("feature_names包含未知特征")
         multiplier_names = [name for name, _ in self.feature_l2_multipliers]
         if len(set(multiplier_names)) != len(multiplier_names):
             raise ValueError("feature_l2_multipliers特征不得重复")
-        if any(name not in FEATURE_NAMES for name in multiplier_names):
+        if any(name not in self.feature_names for name in multiplier_names):
             raise ValueError("feature_l2_multipliers包含未知特征")
         if any(value <= 0 for _, value in self.feature_l2_multipliers):
             raise ValueError("feature_l2_multipliers倍率必须为正")
         if len(set(self.zeroed_features)) != len(self.zeroed_features):
             raise ValueError("zeroed_features特征不得重复")
-        if any(name not in FEATURE_NAMES for name in self.zeroed_features):
+        if any(name not in self.feature_names for name in self.zeroed_features):
             raise ValueError("zeroed_features包含未知特征")
 
 
@@ -155,6 +165,7 @@ class OnlineGradientPeriod:
     boundary_contributions: dict[str, float]
     weights_before: dict[str, float]
     weights_after: dict[str, float]
+    top50_shape_counts: dict[str, int]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -179,6 +190,7 @@ class OnlineGradientPeriod:
             "boundaryContributions": self.boundary_contributions,
             "weightsBefore": self.weights_before,
             "weightsAfter": self.weights_after,
+            "top50ShapeCounts": self.top50_shape_counts,
         }
 
 
@@ -238,7 +250,7 @@ class OnlineGradientReport:
                     np.mean([item.gradients[name] for item in self.periods])
                 ),
             }
-            for name in FEATURE_NAMES
+            for name in self.config.feature_names
         }
         return {
             "modelVersion": "learned_ranker_v4",
@@ -264,6 +276,7 @@ class OnlineGradientReport:
                 "gradientClip": self.config.gradient_clip,
                 "weightLimit": self.config.weight_limit,
                 "directTopK": self.config.direct_top_k,
+                "featureNames": list(self.config.feature_names),
                 "featureL2Multipliers": dict(self.config.feature_l2_multipliers),
                 "zeroedFeatures": list(self.config.zeroed_features),
             },
@@ -328,15 +341,18 @@ class _Step:
 
 def _regularization_multipliers(config: OnlineGradientConfig) -> np.ndarray:
     mapping = dict(config.feature_l2_multipliers)
-    return np.asarray([mapping.get(name, 1.0) for name in FEATURE_NAMES], dtype=float)
+    return np.asarray(
+        [mapping.get(name, 1.0) for name in config.feature_names], dtype=float
+    )
 
 
 def _initial_weights(config: OnlineGradientConfig) -> np.ndarray:
     weights = np.asarray(
-        [float(DEFAULT_WEIGHTS[name]) for name in FEATURE_NAMES], dtype=float
+        [float(DEFAULT_WEIGHTS.get(name, 0.0)) for name in config.feature_names],
+        dtype=float,
     )
     for name in config.zeroed_features:
-        weights[FEATURE_NAMES.index(name)] = 0.0
+        weights[config.feature_names.index(name)] = 0.0
     return weights
 
 
@@ -374,10 +390,11 @@ def online_gradient_step(
         clipped + config.l2_penalty * regularization * weights
     )
     updated = np.clip(updated, -config.weight_limit, config.weight_limit)
-    constraint_index = FEATURE_NAMES.index("constraint_penalty")
-    updated[constraint_index] = min(0.0, updated[constraint_index])
+    if "constraint_penalty" in config.feature_names:
+        constraint_index = config.feature_names.index("constraint_penalty")
+        updated[constraint_index] = min(0.0, updated[constraint_index])
     for name in config.zeroed_features:
-        updated[FEATURE_NAMES.index(name)] = 0.0
+        updated[config.feature_names.index(name)] = 0.0
     brier = float(np.dot(final, final) - 2 * actual_probability + 1)
     return _Step(
         model_probabilities=model,
@@ -484,8 +501,14 @@ def run_online_gradient_research(
         ):
             current_selection = _select_candidate(learners, target_index, config)
             selections.append(current_selection)
-        features = build_candidate_features(history_state, rule)
-        matrix = features[list(FEATURE_NAMES)].to_numpy(dtype=float)
+        features = build_candidate_features(
+            history_state,
+            rule,
+            include_behavioral_context=any(
+                name in BEHAVIORAL_FEATURE_NAMES for name in config.feature_names
+            ),
+        )
+        matrix = features[list(config.feature_names)].to_numpy(dtype=float)
         actual_row = chronological.iloc[target_index]
         actual_text = "".join(
             str(int(actual_row[column])) for column in rule.number_columns
@@ -514,6 +537,12 @@ def run_online_gradient_research(
             contributions = selected_learner.weights * (
                 matrix[actual_index] - matrix[boundary_index]
             )
+            top50_shape_counts = {"组六": 0, "组三": 0, "豹子": 0}
+            for candidate_index in order[: config.direct_top_k]:
+                digits = tuple(
+                    int(value) for value in _CANDIDATES[int(candidate_index)]
+                )
+                top50_shape_counts[classify_digit_shape(digits)] += 1
             deployed_probability = (
                 1.0 / 1000.0
                 if current_selection.abstained
@@ -543,22 +572,27 @@ def run_online_gradient_research(
                     gradient_norm=float(np.linalg.norm(selected_step.gradient)),
                     gradients={
                         name: float(value)
-                        for name, value in zip(FEATURE_NAMES, selected_step.gradient)
+                        for name, value in zip(
+                            config.feature_names, selected_step.gradient
+                        )
                     },
                     boundary_contributions={
                         name: float(value)
-                        for name, value in zip(FEATURE_NAMES, contributions)
+                        for name, value in zip(config.feature_names, contributions)
                     },
                     weights_before={
                         name: float(value)
-                        for name, value in zip(FEATURE_NAMES, selected_learner.weights)
+                        for name, value in zip(
+                            config.feature_names, selected_learner.weights
+                        )
                     },
                     weights_after={
                         name: float(value)
                         for name, value in zip(
-                            FEATURE_NAMES, selected_step.weights_after
+                            config.feature_names, selected_step.weights_after
                         )
                     },
+                    top50_shape_counts=top50_shape_counts,
                 )
             )
         for learner, step in zip(learners, steps):

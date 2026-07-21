@@ -5,7 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.analysis.digit_learned_features import FEATURE_NAMES
+from src.analysis.digit_learned_features import (
+    BEHAVIORAL_FEATURE_NAMES,
+    FEATURE_NAMES,
+)
 from src.analysis.digit_online_gradient import (
     OnlineGradientCandidate,
     OnlineGradientConfig,
@@ -118,6 +121,34 @@ def test_sparse_regularization_and_zeroed_features_are_enforced():
     )
     assert step.weights_after[FEATURE_NAMES.index("shape_transition")] == 0.0
     assert step.weights_after[FEATURE_NAMES.index("shape_recent_deviation")] == 0.0
+
+
+def test_behavioral_features_use_tenfold_l2_without_changing_core_defaults():
+    feature_names = (*FEATURE_NAMES, *BEHAVIORAL_FEATURE_NAMES)
+    matrix = np.zeros((1000, len(feature_names)), dtype=float)
+    weights = np.zeros(len(feature_names), dtype=float)
+    for name in BEHAVIORAL_FEATURE_NAMES:
+        weights[feature_names.index(name)] = 1.0
+    config = OnlineGradientConfig(
+        development_end=600,
+        feature_names=feature_names,
+        feature_l2_multipliers=tuple((name, 10.0) for name in BEHAVIORAL_FEATURE_NAMES),
+        zeroed_features=(),
+        l2_penalty=0.1,
+        gradient_clip=100,
+    )
+
+    step = online_gradient_step(
+        matrix,
+        321,
+        weights,
+        OnlineGradientCandidate(learning_rate=0.1, uniform_shrinkage=0.5),
+        config,
+    )
+
+    for name in BEHAVIORAL_FEATURE_NAMES:
+        assert step.weights_after[feature_names.index(name)] == 0.9
+    assert OnlineGradientConfig(development_end=600).feature_names == FEATURE_NAMES
 
 
 def test_online_gradient_research_is_prequential_and_recalibrates():
