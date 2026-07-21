@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.analysis.digit_daily_policy import select_daily_candidates
 from src.analysis.digit_data import (
     normalize_digit_dataframe,
     sort_digit_dataframe_by_issue,
@@ -242,6 +243,16 @@ def train_full_history_shadow(
         + (1.0 - selection.candidate.uniform_shrinkage) / 1000.0
     )
     order = rank_candidate_indices(final_probabilities, _CANDIDATES)
+    latest_row = chronological.iloc[-1]
+    latest_exact = "".join(
+        str(int(latest_row[column])) for column in rule.number_columns
+    )
+    research_top50 = select_daily_candidates(
+        (_CANDIDATES[int(index)] for index in order),
+        latest_exact=latest_exact,
+        top_k=50,
+        maximum_triples=1,
+    )
     candidate_states = tuple(
         {
             "candidate": {
@@ -269,7 +280,7 @@ def train_full_history_shadow(
         config=config,
         selection=selection,
         candidate_states=candidate_states,
-        research_top50=tuple(_CANDIDATES[int(index)] for index in order[:50]),
+        research_top50=research_top50,
     )
 
 

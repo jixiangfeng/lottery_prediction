@@ -29,8 +29,9 @@ def _history(periods: int) -> pd.DataFrame:
 def test_full_history_shadow_trains_every_available_target_and_locks_future_queue(
     tmp_path,
 ):
+    history = _history(130)
     result = train_full_history_shadow(
-        _history(130),
+        history,
         get_lottery_rule("pl3"),
         FullHistoryShadowConfig(
             warmup_history=50,
@@ -59,8 +60,15 @@ def test_full_history_shadow_trains_every_available_target_and_locks_future_queu
         "parameterChangesAllowed": False,
     }
     assert len(payload["candidateStates"]) == 4
-    assert len(payload["nextPrediction"]["researchTop50"]) == 50
-    assert len(set(payload["nextPrediction"]["researchTop50"])) == 50
+    candidates = payload["nextPrediction"]["researchTop50"]
+    assert len(candidates) == 50
+    assert len(set(candidates)) == 50
+    latest_row = history.iloc[-1]
+    latest_exact = "".join(
+        str(int(latest_row[column])) for column in ("百位", "十位", "个位")
+    )
+    assert latest_exact not in candidates
+    assert sum(len(set(candidate)) == 1 for candidate in candidates) <= 1
 
     destination = tmp_path / "shadow.json"
     write_locked_shadow_state(result, destination)

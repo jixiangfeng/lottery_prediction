@@ -8,6 +8,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.analysis.digit_daily_policy import select_daily_candidates  # noqa: E402
 from src.analysis.digit_data import (  # noqa: E402
     load_digit_csv,
     normalize_digit_dataframe,
@@ -81,7 +83,6 @@ def _load_shadow_state(path: Path) -> tuple[
 ]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     config = FullHistoryShadowConfig()
-    online_config = config.online_config(int(payload["trainingEndIndex"]))
     learners: list[_CandidateState] = []
     for state in payload["candidateStates"]:
         candidate_payload = state["candidate"]
@@ -127,11 +128,13 @@ def _predict_from_learners(
 ) -> list[str]:
     online_config = config.online_config(len(chronological))
     next_state = build_history_state(chronological, rule, config.feature_config)
-    next_matrix = build_candidate_features(next_state, rule)[list(FEATURE_NAMES)].to_numpy(
-        dtype=float
-    )
+    next_matrix = build_candidate_features(next_state, rule)[
+        list(FEATURE_NAMES)
+    ].to_numpy(dtype=float)
     selected = next(
-        learner for learner in learners if learner.candidate.key == selection.candidate.key
+        learner
+        for learner in learners
+        if learner.candidate.key == selection.candidate.key
     )
     scores = next_matrix @ selected.weights / online_config.temperature
     shifted = scores - float(scores.max())
@@ -142,7 +145,19 @@ def _predict_from_learners(
         + (1.0 - selection.candidate.uniform_shrinkage) / 1000.0
     )
     order = rank_candidate_indices(final_probabilities, _CANDIDATES)
-    return [_CANDIDATES[int(index)] for index in order[:50]]
+    ranked_candidates = (_CANDIDATES[int(index)] for index in order)
+    latest_row = chronological.iloc[-1]
+    latest_exact = "".join(
+        str(int(latest_row[column])) for column in rule.number_columns
+    )
+    return list(
+        select_daily_candidates(
+            ranked_candidates,
+            latest_exact=latest_exact,
+            top_k=50,
+            maximum_triples=1,
+        )
+    )
 
 
 def _incremental_predict(
@@ -153,7 +168,7 @@ def _incremental_predict(
         normalize_digit_dataframe(history, rule), ascending=True
     )
     payload, config, learners, selection = _load_shadow_state(shadow_state)
-    state_end = int(payload["trainingEndIndex"])
+    state_end = int(cast(int | str, payload["trainingEndIndex"]))
     if len(chronological) < state_end:
         raise ValueError("CSV历史短于影子状态，不能增量预测")
 
@@ -165,9 +180,9 @@ def _incremental_predict(
             chronological, rule, update_indices, config.feature_config
         ),
     ):
-        matrix = build_candidate_features(history_state, rule)[list(FEATURE_NAMES)].to_numpy(
-            dtype=float
-        )
+        matrix = build_candidate_features(history_state, rule)[
+            list(FEATURE_NAMES)
+        ].to_numpy(dtype=float)
         row = chronological.iloc[target_index]
         actual_index = int(
             "".join(str(int(row[column])) for column in rule.number_columns)
@@ -196,9 +211,17 @@ def _incremental_predict(
         new_draws.append(
             {
                 "issue": str(row["期数"]),
-                "number": "".join(str(int(row[column])) for column in rule.number_columns),
+                "number": "".join(
+                    str(int(row[column])) for column in rule.number_columns
+                ),
             }
         )
+    research_top50 = _predict_from_learners(
+        chronological, rule, config, learners, selection
+    )
+    latest_exact = "".join(
+        str(int(latest_row[column])) for column in rule.number_columns
+    )
     return {
         "lottery": lottery,
         "latestHistoryIssue": str(latest_row["期数"]),
@@ -206,9 +229,15 @@ def _incremental_predict(
         "formalPredictionActivated": False,
         "shadowOnly": True,
         "selection": selection.to_dict(),
-        "researchTop50": _predict_from_learners(
-            chronological, rule, config, learners, selection
-        ),
+        "candidatePolicy": {
+            "excludeLatestExact": True,
+            "latestExact": latest_exact,
+            "maximumTriples": 1,
+            "selectedTriples": sum(
+                len(set(candidate)) == 1 for candidate in research_top50
+            ),
+        },
+        "researchTop50": research_top50,
     }
 
 
@@ -216,28 +245,49 @@ def _full_history_predict(history: pd.DataFrame, lottery: str) -> dict[str, obje
     rule = get_lottery_rule(lottery)
     result = train_full_history_shadow(history, rule)
     payload = result.to_dict()
+    chronological = sort_digit_dataframe_by_issue(
+        normalize_digit_dataframe(history, rule), ascending=True
+    )
+    latest_row = chronological.iloc[-1]
+    latest_exact = "".join(
+        str(int(latest_row[column])) for column in rule.number_columns
+    )
+    next_prediction = cast(dict[str, object], payload["nextPrediction"])
+    candidates = list(cast(list[str], next_prediction["researchTop50"]))
     return {
         "lottery": lottery,
         "latestHistoryIssue": payload["latestHistoryIssue"],
         "newDrawsUsed": [],
         "formalPredictionActivated": payload["formalPredictionActivated"],
-        "shadowOnly": payload["nextPrediction"]["shadowOnly"],
+        "shadowOnly": next_prediction["shadowOnly"],
         "selection": payload["currentSelection"],
-        "researchTop50": payload["nextPrediction"]["researchTop50"],
+        "candidatePolicy": {
+            "excludeLatestExact": True,
+            "latestExact": latest_exact,
+            "maximumTriples": 1,
+            "selectedTriples": sum(
+                len(set(candidate)) == 1 for candidate in candidates
+            ),
+        },
+        "researchTop50": candidates,
     }
 
 
 def _print_text(result: dict[str, object]) -> None:
-    top50 = list(result["researchTop50"])
+    top50 = cast(list[str], result["researchTop50"])
     print(f"玩法：{result['lottery']}")
     print(f"最新已开奖期号：{result['latestHistoryIssue']}")
-    if result["newDrawsUsed"]:
-        used = ", ".join(
-            f"{row['issue']}={row['number']}" for row in result["newDrawsUsed"]
-        )
+    new_draws = cast(list[dict[str, str]], result["newDrawsUsed"])
+    if new_draws:
+        used = ", ".join(f"{row['issue']}={row['number']}" for row in new_draws)
         print(f"本次增量使用：{used}")
     print(f"正式推荐：{result['formalPredictionActivated']}")
     print(f"仅影子研究：{result['shadowOnly']}")
+    policy = cast(dict[str, object], result["candidatePolicy"])
+    print(
+        "候选策略：排除上期原号，豹子最多"
+        f"{policy['maximumTriples']}个（本期保留{policy['selectedTriples']}个）"
+    )
     print(f"Top10：{', '.join(top50[:10])}")
     print(f"Top50：{', '.join(top50)}")
 
@@ -259,7 +309,9 @@ def main(argv: list[str] | None = None) -> int:
         history = _merge_latest_draws(
             history, args.lottery, args.periods, args.timeout, args.retries
         )
-    shadow_state = ROOT / f"state/learned_ranker_v4/full_history_shadow_{args.lottery}.json"
+    shadow_state = (
+        ROOT / f"state/learned_ranker_v4/full_history_shadow_{args.lottery}.json"
+    )
     if shadow_state.exists():
         result = _incremental_predict(history, args.lottery, shadow_state)
     else:
