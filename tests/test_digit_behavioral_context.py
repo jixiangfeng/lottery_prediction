@@ -43,8 +43,7 @@ def test_behavioral_context_challenge_runs_paired_prior_only_groups():
     assert report["frozenTestRead"] is False
     assert report["groups"]["A"]["periods"] == 30
     assert report["groups"]["B"]["periods"] == 30
-    assert report["groups"]["C"]["status"] == "trial_data_unavailable"
-    assert report["groups"]["D"]["status"] == "trial_data_unavailable"
+    assert set(report["groups"]) == {"A", "B"}
     assert report["comparison"]["pairedPeriods"] == 30
     assert report["behavioralFeatureL2Multiplier"] == 10.0
     assert report["gate"]["passed"] is False

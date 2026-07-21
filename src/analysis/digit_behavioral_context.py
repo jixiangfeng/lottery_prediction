@@ -214,8 +214,6 @@ def run_behavioral_context_challenge(
         "groups": {
             "A": summary_a,
             "B": summary_b,
-            "C": {"status": "trial_data_unavailable"},
-            "D": {"status": "trial_data_unavailable"},
         },
         "comparison": {
             "pairedPeriods": len(log_improvements),
