@@ -37,6 +37,17 @@ def _history(periods: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _repeated_history(periods: int) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "期数": [str(2026001 + index) for index in range(periods)],
+            "百位": [1] * periods,
+            "十位": [2] * periods,
+            "个位": [3] * periods,
+        }
+    )
+
+
 def _loss(
     matrix: np.ndarray,
     weights: np.ndarray,
@@ -123,7 +134,7 @@ def test_sparse_regularization_and_zeroed_features_are_enforced():
     assert step.weights_after[FEATURE_NAMES.index("shape_recent_deviation")] == 0.0
 
 
-def test_behavioral_features_use_tenfold_l2_without_changing_core_defaults():
+def test_behavioral_features_use_configured_l2_without_changing_core_defaults():
     feature_names = (*FEATURE_NAMES, *BEHAVIORAL_FEATURE_NAMES)
     matrix = np.zeros((1000, len(feature_names)), dtype=float)
     weights = np.zeros(len(feature_names), dtype=float)
@@ -132,7 +143,7 @@ def test_behavioral_features_use_tenfold_l2_without_changing_core_defaults():
     config = OnlineGradientConfig(
         development_end=600,
         feature_names=feature_names,
-        feature_l2_multipliers=tuple((name, 10.0) for name in BEHAVIORAL_FEATURE_NAMES),
+        feature_l2_multipliers=tuple((name, 2.0) for name in BEHAVIORAL_FEATURE_NAMES),
         zeroed_features=(),
         l2_penalty=0.1,
         gradient_clip=100,
@@ -147,8 +158,45 @@ def test_behavioral_features_use_tenfold_l2_without_changing_core_defaults():
     )
 
     for name in BEHAVIORAL_FEATURE_NAMES:
-        assert step.weights_after[feature_names.index(name)] == 0.9
+        assert step.weights_after[feature_names.index(name)] == 0.98
     assert OnlineGradientConfig(development_end=600).feature_names == FEATURE_NAMES
+
+
+def test_monotonic_behavior_constraints_block_positive_risk_weights():
+    feature_names = (*FEATURE_NAMES, *BEHAVIORAL_FEATURE_NAMES)
+    matrix = np.zeros((1000, len(feature_names)), dtype=float)
+    risk_index = feature_names.index(BEHAVIORAL_FEATURE_NAMES[0])
+    matrix[321, risk_index] = 1.0
+    weights = np.zeros(len(feature_names), dtype=float)
+    candidate = OnlineGradientCandidate(learning_rate=0.1, uniform_shrinkage=1.0)
+    common = dict(
+        development_end=600,
+        feature_names=feature_names,
+        zeroed_features=(),
+        l2_penalty=0.0,
+        gradient_clip=100.0,
+    )
+
+    unconstrained = online_gradient_step(
+        matrix,
+        321,
+        weights,
+        candidate,
+        OnlineGradientConfig(**common),
+    )
+    constrained = online_gradient_step(
+        matrix,
+        321,
+        weights,
+        candidate,
+        OnlineGradientConfig(
+            **common,
+            nonpositive_features=BEHAVIORAL_FEATURE_NAMES,
+        ),
+    )
+
+    assert unconstrained.weights_after[risk_index] > 0
+    assert constrained.weights_after[risk_index] == 0
 
 
 def test_online_gradient_research_is_prequential_and_recalibrates():
@@ -175,3 +223,29 @@ def test_online_gradient_research_is_prequential_and_recalibrates():
         set(item.weights_before) == set(FEATURE_NAMES) for item in report.periods
     )
     assert report.to_dict()["metrics"]["periods"] == 20
+
+
+def test_online_gradient_can_evaluate_the_same_policy_used_by_daily_top50():
+    report = run_online_gradient_research(
+        _repeated_history(130),
+        get_lottery_rule("fc3d"),
+        OnlineGradientConfig(
+            development_end=120,
+            outer_periods=20,
+            calibration_interval=10,
+            search_lookback=30,
+            validation_lookback=20,
+            warmup_history=50,
+            learning_rates=(0.0, 0.005),
+            shrinkages=(0.0, 0.5),
+            daily_candidate_policy=True,
+            maximum_top50_triples=0,
+        ),
+    )
+
+    payload = report.to_dict()
+    assert payload["config"]["dailyCandidatePolicy"] is True
+    assert payload["config"]["maximumTop50Triples"] == 0
+    assert all(item.candidate_policy_rank is None for item in report.periods)
+    assert not any(item.research_direct_hit for item in report.periods)
+    assert all(item.top50_shape_counts["豹子"] == 0 for item in report.periods)

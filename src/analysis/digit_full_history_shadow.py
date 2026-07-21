@@ -9,6 +9,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
@@ -144,6 +145,40 @@ class FullHistoryShadowResult:
 
 def _data_sha256(history: pd.DataFrame) -> str:
     return hashlib.sha256(history.to_csv(index=False).encode("utf-8")).hexdigest()
+
+
+def shadow_state_sha256(payload: Mapping[str, Any]) -> str:
+    """计算不包含自校验字段的影子状态指纹。"""
+
+    document = dict(payload)
+    document.pop("stateSha256", None)
+    serialized = json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def validate_locked_shadow_state(
+    payload: Mapping[str, Any], *, expected_lottery: str
+) -> dict[str, Any]:
+    """校验影子状态身份、源码版本和内容完整性。"""
+
+    document = dict(payload)
+    if document.get("modelVersion") != "learned_ranker_v4":
+        raise ValueError("影子状态不是learned_ranker_v4")
+    if document.get("evaluationKind") != "full_history_shadow_pretraining":
+        raise ValueError("影子状态类型不正确")
+    if document.get("lottery") != expected_lottery:
+        raise ValueError("影子状态彩种与请求不一致")
+    current_source = learned_ranker_source_fingerprint()
+    if document.get("sourceFingerprint") != current_source:
+        raise ValueError("影子状态源码指纹不匹配，禁止用旧状态增量预测")
+    claimed_state = document.get("stateSha256")
+    if not isinstance(claimed_state, str) or claimed_state != shadow_state_sha256(
+        document
+    ):
+        raise ValueError("影子状态内容指纹不匹配，文件可能被修改或损坏")
+    return document
 
 
 def decay_shadow_weights(
@@ -290,11 +325,7 @@ def write_locked_shadow_state(
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = result.to_dict()
-    payload["stateSha256"] = hashlib.sha256(
-        json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-    ).hexdigest()
+    payload["stateSha256"] = shadow_state_sha256(payload)
     content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     try:
@@ -310,6 +341,8 @@ __all__ = [
     "FullHistoryShadowConfig",
     "FullHistoryShadowResult",
     "decay_shadow_weights",
+    "shadow_state_sha256",
     "train_full_history_shadow",
+    "validate_locked_shadow_state",
     "write_locked_shadow_state",
 ]

@@ -140,16 +140,44 @@ def test_behavioral_context_features_are_prior_only_and_candidate_specific():
     assert not set(BEHAVIORAL_FEATURE_NAMES).intersection(core.columns)
     assert set(BEHAVIORAL_FEATURE_NAMES).issubset(behavior.columns)
     assert (
-        behavior.loc["123", "exact_repeat_pressure"]
-        > behavior.loc["132", "exact_repeat_pressure"]
+        behavior.loc["123", "exact_recency_risk"]
+        > behavior.loc["132", "exact_recency_risk"]
     )
     assert (
-        behavior.loc["123", "group_repeat_pressure"]
-        == behavior.loc["132", "group_repeat_pressure"]
+        behavior.loc["132", "group_recency_risk"]
+        > behavior.loc["123", "group_recency_risk"]
     )
-    assert behavior.loc["123", "last_position_overlap"] == 1.0
-    assert behavior.loc["132", "last_digit_overlap"] == 1.0
+    assert (
+        behavior.loc["123", "last_position_overlap_risk"]
+        > behavior.loc["132", "last_position_overlap_risk"]
+    )
+    assert (
+        behavior.loc["132", "last_unordered_overlap_risk"]
+        > behavior.loc["123", "last_unordered_overlap_risk"]
+    )
     assert np.isfinite(behavior[list(BEHAVIORAL_FEATURE_NAMES)].to_numpy()).all()
+
+
+def test_behavioral_context_features_have_comparable_per_query_scale():
+    rule = get_lottery_rule("pl3")
+    state = build_history_state(
+        _history(180),
+        rule,
+        LearnedFeatureConfig(windows=(20, 50, 150)),
+    )
+
+    features = build_candidate_features(
+        state,
+        rule,
+        include_behavioral_context=True,
+    )
+
+    for name in BEHAVIORAL_FEATURE_NAMES:
+        values = features[name].to_numpy(dtype=float)
+        assert np.isclose(values.mean(), 0.0, atol=1e-12)
+        assert np.isclose(values.std(), 0.0, atol=1e-12) or np.isclose(
+            values.std(), 1.0, atol=1e-12
+        )
 
 
 def test_behavioral_context_does_not_read_target_outcome():

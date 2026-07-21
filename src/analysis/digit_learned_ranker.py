@@ -567,6 +567,7 @@ def learned_ranker_source_fingerprint() -> str:
     directory = Path(__file__).resolve().parent
     lotteries_directory = directory.parent / "lotteries"
     paths = [
+        directory / "digit_daily_policy.py",
         directory / "digit_data.py",
         directory / "digit_statistics.py",
         directory / "digit_full_history_shadow.py",

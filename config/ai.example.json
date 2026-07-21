@@ -1,0 +1,6 @@
+{
+  "provider": "deepseek",
+  "apiKey": "",
+  "model": "deepseek-v4-flash",
+  "timeout": 30
+}

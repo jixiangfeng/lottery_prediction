@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import binom
 
+from src.analysis.digit_daily_policy import select_daily_candidates
 from src.analysis.digit_data import (
     normalize_digit_dataframe,
     sort_digit_dataframe_by_issue,
@@ -59,9 +60,12 @@ class OnlineGradientConfig:
     gradient_clip: float = 1.0
     weight_limit: float = 1.5
     direct_top_k: int = 50
+    daily_candidate_policy: bool = False
+    maximum_top50_triples: int = 1
     feature_names: tuple[str, ...] = FEATURE_NAMES
     feature_l2_multipliers: tuple[tuple[str, float], ...] = _SPARSE_L2_MULTIPLIERS
     zeroed_features: tuple[str, ...] = _SPARSE_ZERO_FEATURES
+    nonpositive_features: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.development_end <= 0 or self.outer_periods <= 0:
@@ -84,6 +88,10 @@ class OnlineGradientConfig:
             raise ValueError("l2_penalty不得为负")
         if not 1 <= self.direct_top_k <= 1000:
             raise ValueError("direct_top_k必须位于1..1000")
+        if self.daily_candidate_policy and self.direct_top_k >= 1000:
+            raise ValueError("排除上期原号时direct_top_k必须小于1000")
+        if self.maximum_top50_triples < 0:
+            raise ValueError("maximum_top50_triples不得为负")
         available_features = set(FEATURE_NAMES) | set(BEHAVIORAL_FEATURE_NAMES)
         if not self.feature_names or len(set(self.feature_names)) != len(
             self.feature_names
@@ -102,6 +110,10 @@ class OnlineGradientConfig:
             raise ValueError("zeroed_features特征不得重复")
         if any(name not in self.feature_names for name in self.zeroed_features):
             raise ValueError("zeroed_features包含未知特征")
+        if len(set(self.nonpositive_features)) != len(self.nonpositive_features):
+            raise ValueError("nonpositive_features特征不得重复")
+        if any(name not in self.feature_names for name in self.nonpositive_features):
+            raise ValueError("nonpositive_features包含未知特征")
 
 
 @dataclass(frozen=True)
@@ -155,6 +167,7 @@ class OnlineGradientPeriod:
     research_actual_probability: float
     deployed_actual_probability: float
     research_rank: int
+    candidate_policy_rank: int | None
     research_direct_hit: bool
     research_log_loss: float
     deployed_log_loss: float
@@ -180,6 +193,7 @@ class OnlineGradientPeriod:
             "researchActualProbability": self.research_actual_probability,
             "deployedActualProbability": self.deployed_actual_probability,
             "researchRank": self.research_rank,
+            "candidatePolicyRank": self.candidate_policy_rank,
             "researchDirectHit": self.research_direct_hit,
             "researchLogLoss": self.research_log_loss,
             "deployedLogLoss": self.deployed_log_loss,
@@ -276,9 +290,12 @@ class OnlineGradientReport:
                 "gradientClip": self.config.gradient_clip,
                 "weightLimit": self.config.weight_limit,
                 "directTopK": self.config.direct_top_k,
+                "dailyCandidatePolicy": self.config.daily_candidate_policy,
+                "maximumTop50Triples": self.config.maximum_top50_triples,
                 "featureNames": list(self.config.feature_names),
                 "featureL2Multipliers": dict(self.config.feature_l2_multipliers),
                 "zeroedFeatures": list(self.config.zeroed_features),
+                "nonpositiveFeatures": list(self.config.nonpositive_features),
             },
             "metrics": {
                 "periods": len(self.periods),
@@ -353,6 +370,9 @@ def _initial_weights(config: OnlineGradientConfig) -> np.ndarray:
     )
     for name in config.zeroed_features:
         weights[config.feature_names.index(name)] = 0.0
+    for name in config.nonpositive_features:
+        index = config.feature_names.index(name)
+        weights[index] = min(0.0, weights[index])
     return weights
 
 
@@ -395,6 +415,9 @@ def online_gradient_step(
         updated[constraint_index] = min(0.0, updated[constraint_index])
     for name in config.zeroed_features:
         updated[config.feature_names.index(name)] = 0.0
+    for name in config.nonpositive_features:
+        index = config.feature_names.index(name)
+        updated[index] = min(0.0, updated[index])
     brier = float(np.dot(final, final) - 2 * actual_probability + 1)
     return _Step(
         model_probabilities=model,
@@ -533,12 +556,35 @@ def run_online_gradient_research(
             probabilities = selected_step.final_probabilities
             order = rank_candidate_indices(probabilities, _CANDIDATES)
             rank = int(np.flatnonzero(order == actual_index)[0]) + 1
-            boundary_index = int(order[min(config.direct_top_k, len(order)) - 1])
+            if config.daily_candidate_policy:
+                if history_state.latest_numbers is None:
+                    raise RuntimeError("日常候选策略缺少上期开奖")
+                latest_exact = "".join(
+                    str(value) for value in history_state.latest_numbers
+                )
+                selected_candidates = select_daily_candidates(
+                    (_CANDIDATES[int(index)] for index in order),
+                    latest_exact=latest_exact,
+                    top_k=config.direct_top_k,
+                    maximum_triples=config.maximum_top50_triples,
+                )
+                selected_indices = tuple(int(value) for value in selected_candidates)
+                candidate_policy_rank = (
+                    selected_candidates.index(actual_text) + 1
+                    if actual_text in selected_candidates
+                    else None
+                )
+            else:
+                selected_indices = tuple(
+                    int(index) for index in order[: config.direct_top_k]
+                )
+                candidate_policy_rank = rank if rank <= config.direct_top_k else None
+            boundary_index = selected_indices[-1]
             contributions = selected_learner.weights * (
                 matrix[actual_index] - matrix[boundary_index]
             )
             top50_shape_counts = {"组六": 0, "组三": 0, "豹子": 0}
-            for candidate_index in order[: config.direct_top_k]:
+            for candidate_index in selected_indices:
                 digits = tuple(
                     int(value) for value in _CANDIDATES[int(candidate_index)]
                 )
@@ -564,7 +610,8 @@ def run_online_gradient_research(
                     research_actual_probability=float(probabilities[actual_index]),
                     deployed_actual_probability=deployed_probability,
                     research_rank=rank,
-                    research_direct_hit=rank <= config.direct_top_k,
+                    candidate_policy_rank=candidate_policy_rank,
+                    research_direct_hit=candidate_policy_rank is not None,
                     research_log_loss=selected_step.log_loss,
                     deployed_log_loss=-math.log(deployed_probability),
                     research_brier=selected_step.brier,

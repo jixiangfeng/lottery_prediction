@@ -4,16 +4,33 @@
 
 - Python 3.11；推荐使用 `uv run --python 3.11 --with-requirements requirements-dev.txt`。
 - 训练、评估和日报只读取本地 CSV，不联网。
-- 只有 `make digit-fetch` 会访问固定白名单来源。
+- `make digit-fetch`和`make digit-predict-today`会访问固定开奖来源；后者仅在内存中合并，不覆盖CSV或影子状态。
+- `digit_predict_today --ai`还会访问固定`api.deepseek.com`；默认关闭，密钥只从被Git忽略的本机配置读取。
 
 ## 命令
 
 ```bash
 make digit-fetch DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
+make digit-predict-today DIGIT_LOTTERY=fc3d
+make digit-behavioral-context DIGIT_LOTTERY=fc3d
 make digit-learned-ranker-train DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
 make digit-learned-ranker-evaluate DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
 make digit-learned-ranker-daily DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
 make ci
+```
+
+AI文案配置使用`config/ai.local.json`，结构参考`config/ai.example.json`。运行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\digit_predict_today.py --lottery fc3d --ai
+```
+
+AI失败不会改变模型结果，命令会保留确定性说明，并在`ai.status`中记录失败原因。
+
+需要查看未准入的研究Top10时，显式增加`--show-research`；该输出不得称为正式推荐：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\digit_predict_today.py --lottery fc3d --ai --show-research
 ```
 
 冒烟可设置 `DIGIT_V4_SMOKE=1`；不得将 smoke 结果用于效果结论。
@@ -40,6 +57,18 @@ make ci
 3. canonical 指纹不匹配：检查冻结前缀是否被修改。
 4. 运行过慢：提高开发阶段 stride 或减少 trial；正式 Frozen Test 不应抽样。
 5. 结果与随机相近：如实保留，不通过闸门，不继续查看 Frozen Test 调参。
+6. 影子状态源码指纹不匹配：保留旧文件作为审计证据，生成新路径后显式切换，不得覆盖旧状态：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\digit_full_history_shadow.py --lottery fc3d --csv data/fc3d/official_history.csv --output state/learned_ranker_v4/full_history_shadow_fc3d_current.json
+.\.venv\Scripts\python.exe scripts\digit_predict_today.py --lottery fc3d --shadow-state state/learned_ranker_v4/full_history_shadow_fc3d_current.json --no-fetch
+```
+
+行为挑战默认排除CSV最后500期Frozen。需要扫描开发区全部完整500期块时运行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\digit_behavioral_context.py --lottery fc3d --csv data/fc3d/official_history.csv --output reports/development/behavioral_context_v2_fc3d_all_blocks.json --all-development-blocks
+```
 
 ## 清理说明
 

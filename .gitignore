@@ -164,6 +164,10 @@ models/
 cache/
 temp/
 
+# 本机AI凭据配置，禁止提交。
+!config/ai.example.json
+config/ai.local.json
+
 # IDE
 .vscode/
 .idea/

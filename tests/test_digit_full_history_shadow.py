@@ -9,7 +9,9 @@ import pytest
 
 from src.analysis.digit_full_history_shadow import (
     FullHistoryShadowConfig,
+    shadow_state_sha256,
     train_full_history_shadow,
+    validate_locked_shadow_state,
     write_locked_shadow_state,
 )
 from src.lotteries import get_lottery_rule
@@ -74,5 +76,20 @@ def test_full_history_shadow_trains_every_available_target_and_locks_future_queu
     write_locked_shadow_state(result, destination)
     stored = json.loads(destination.read_text(encoding="utf-8"))
     assert stored["stateSha256"]
+    assert shadow_state_sha256(stored) == stored["stateSha256"]
+    assert validate_locked_shadow_state(stored, expected_lottery="pl3") == stored
+
+    changed = dict(stored)
+    changed["latestHistoryIssue"] = "9999999"
+    with pytest.raises(ValueError, match="内容指纹不匹配"):
+        validate_locked_shadow_state(changed, expected_lottery="pl3")
+
+    stale = dict(stored)
+    stale["sourceFingerprint"] = "stale"
+    with pytest.raises(ValueError, match="源码指纹不匹配"):
+        validate_locked_shadow_state(stale, expected_lottery="pl3")
+
+    with pytest.raises(ValueError, match="彩种与请求不一致"):
+        validate_locked_shadow_state(stored, expected_lottery="fc3d")
     with pytest.raises(RuntimeError, match="已存在"):
         write_locked_shadow_state(result, destination)
