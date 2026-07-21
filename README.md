@@ -99,6 +99,20 @@ python scripts/digit_full_history_shadow.py --lottery pl3 --csv data/pl3/officia
 
 该状态从第151期开始连续更新全部候选，使用20/50/150/300/500期窗口（长期窗口低权重）和300期权重半衰，仅保存最终权重、最近400期校准指标及下一期研究Top50。输出以原子只写方式锁定，正式推荐保持关闭；新的独立验证固定为锁定之后未来500期，历史中不得另挑500期冒充Frozen。
 
+日常预测入口会先从官方白名单抓取最近期开奖，再临时合并到本地CSV和锁定影子状态上做增量更新；不会覆盖`state/learned_ranker_v4/full_history_shadow_*.json`：
+
+```bash
+make digit-predict-today DIGIT_LOTTERY=fc3d
+make digit-predict-today DIGIT_LOTTERY=pl3
+```
+
+也可以直接运行脚本并输出JSON：
+
+```bash
+python scripts/digit_predict_today.py --lottery fc3d --json
+python scripts/digit_predict_today.py --lottery pl3 --json
+```
+
 历史稳健性可使用固定规则扫描全部完整非重叠500期块：
 
 ```bash

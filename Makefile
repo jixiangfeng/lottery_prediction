@@ -1,6 +1,6 @@
 # 福彩3D、排列三 learned ranker Makefile
 
-.PHONY: setup fmt lint test build run digit-fetch digit-reconcile-jsonl three-layer-acceptance digit-predictability-audit digit-online-gradient digit-learned-ranker-train digit-learned-ranker-adaptive digit-learned-ranker-evaluate digit-learned-ranker-daily ci clean help
+.PHONY: setup fmt lint test build run digit-fetch digit-reconcile-jsonl digit-predict-today three-layer-acceptance digit-predictability-audit digit-online-gradient digit-learned-ranker-train digit-learned-ranker-adaptive digit-learned-ranker-evaluate digit-learned-ranker-daily ci clean help
 .DEFAULT_GOAL := help
 
 -include .env
@@ -55,6 +55,9 @@ digit-fetch: ## 从固定白名单抓取并追加原始JSONL，不直接覆盖CS
 digit-reconcile-jsonl: ## 多源原始JSONL对账后生成标准CSV
 	$(RUN) scripts/reconcile_digit_jsonl.py --raw-jsonl $(DIGIT_RAW_JSONL) --output-csv $(DIGIT_CSV)
 
+digit-predict-today: ## 抓取最新开奖并基于锁定影子状态输出下一期研究Top50
+	$(RUN) scripts/digit_predict_today.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV)
+
 three-layer-acceptance: ## 不训练v4、不读Frozen结果的三层离线验收
 	$(RUN) scripts/three_layer_acceptance.py --lottery $(DIGIT_LOTTERY) --csv $(DIGIT_CSV) --frozen-periods $(DIGIT_V4_FROZEN_TEST_PERIODS) --output $(THREE_LAYER_ACCEPTANCE)
 
@@ -85,6 +88,7 @@ clean: ## 清理缓存与构建产物
 help: ## 查看可用命令
 	@echo "make digit-fetch                    抓取官方历史"
 	@echo "make digit-reconcile-jsonl          多源JSONL对账生成CSV"
+	@echo "make digit-predict-today            抓最新开奖并输出下一期研究Top50"
 	@echo "make three-layer-acceptance         运行不读取Frozen结果的三层验收"
 	@echo "make digit-learned-ranker-train     Search/Validation 调参"
 	@echo "make digit-learned-ranker-adaptive  在线自适应开发模拟"

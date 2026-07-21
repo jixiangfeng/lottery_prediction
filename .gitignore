@@ -142,6 +142,24 @@ reports/
 state/
 lottery_prediction_flow.html
 lottery_prediction_flow.png
+
+# 版本化基线：复现预测需要最新CSV和锁定影子状态。
+!data/
+!data/fc3d/
+!data/pl3/
+!data/fc3d/official_history.csv
+!data/pl3/official_history.csv
+data/fc3d/raw/
+data/pl3/raw/
+data/**/*.bak
+data/**/*.bak-*
+!state/
+!state/learned_ranker_v4/
+!state/learned_ranker_v4/frozen_sparse_v4_protocol_lock.json
+!state/learned_ranker_v4/frozen_fc3d_once.marker.json
+!state/learned_ranker_v4/frozen_pl3_once.marker.json
+!state/learned_ranker_v4/full_history_shadow_fc3d.json
+!state/learned_ranker_v4/full_history_shadow_pl3.json
 models/
 cache/
 temp/

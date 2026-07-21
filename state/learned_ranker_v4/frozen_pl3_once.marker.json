@@ -1,0 +1,8 @@
+{
+  "status": "completed",
+  "lottery": "pl3",
+  "lockSha256": "0533b8ffd3844344d7a33a47d79443a7344211fcf59f11934a38b8feec73e43f",
+  "report": "reports/frozen/sparse_online_gradient_v4_pl3.json",
+  "reportSha256": "9b7d12b229e9f3a2b55b80ab34bd8a58b7f26c8ce704bd1f9b55fe1e112df044",
+  "rerunAllowed": false
+}

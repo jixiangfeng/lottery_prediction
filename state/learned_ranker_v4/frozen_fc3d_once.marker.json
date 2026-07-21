@@ -1,0 +1,8 @@
+{
+  "status": "completed",
+  "lottery": "fc3d",
+  "lockSha256": "0533b8ffd3844344d7a33a47d79443a7344211fcf59f11934a38b8feec73e43f",
+  "report": "reports/frozen/sparse_online_gradient_v4_fc3d.json",
+  "reportSha256": "688821bed94851bac8183cc4a01e477d4013075bbb0fe75c2a3f1f707214739d",
+  "rerunAllowed": false
+}

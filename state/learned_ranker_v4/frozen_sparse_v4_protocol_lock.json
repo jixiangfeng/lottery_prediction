@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "modelVersion": "learned_ranker_v4",
+  "protocol": "sparse_online_gradient_frozen_once",
+  "sourceFingerprint": "a4edde551acec7339bf540b0f50e1b84898ce228ea3016ab70f1b855f2144351",
+  "frozenPeriods": 500,
+  "config": {
+    "outerPeriods": 500,
+    "calibrationInterval": 10,
+    "searchLookback": 300,
+    "validationLookback": 100,
+    "warmupHistory": 150,
+    "learningRates": [
+      0.0,
+      0.01,
+      0.02,
+      0.05
+    ],
+    "shrinkages": [
+      0.0,
+      0.25,
+      0.5,
+      0.75,
+      1.0
+    ],
+    "temperature": 1.0,
+    "l2Penalty": 0.001,
+    "gradientClip": 1.0,
+    "weightLimit": 1.5,
+    "directTopK": 50,
+    "featureL2Multipliers": [
+      [
+        "position_frequency",
+        10.0
+      ],
+      [
+        "sum_distribution",
+        5.0
+      ],
+      [
+        "pair_frequency",
+        5.0
+      ],
+      [
+        "pair_trend",
+        5.0
+      ],
+      [
+        "position_trend",
+        5.0
+      ],
+      [
+        "recent_trend",
+        5.0
+      ]
+    ],
+    "zeroedFeatures": [
+      "shape_transition",
+      "shape_recent_deviation"
+    ]
+  },
+  "gate": {
+    "meanLogLossStrictlyBelowUniform": true,
+    "meanBrierStrictlyBelowUniform": true,
+    "top50OneSidedPValueBelow": 0.05,
+    "stableLogLossBlocksRequired": 2,
+    "timeBlocks": 3,
+    "jointActivationRequiresBothLotteries": true
+  },
+  "selectionUsesFrozenTargets": false,
+  "prequentialUpdates": "目标期结果只影响下一期及以后"
+}
