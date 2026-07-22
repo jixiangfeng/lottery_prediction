@@ -4,6 +4,11 @@
 
 ### Added
 
+- 新增隔离的`probability_v5`开发挑战器：四个预注册专家、自适应指数权重、独立temperature校准、raw/日常策略Top50双口径和联合统计闸门；入口不读取v4状态或Frozen，只写永久不可晋级的开发报告。
+- 新增`digit-probability-v5-development`和`--smoke`执行链；smoke只使用Frozen之前50期验证代码，不生成模型状态、研究排名或正式推荐。
+- 新增v5不可覆盖开发协议：完整开发前锁定数据、源码、配置、Frozen边界和执行计划；开发报告改为相同内容幂等、不同内容拒绝覆盖。
+- 新增全流程均匀随机模拟执行器和CLI，确定性重放四专家、聚合、Calibration及联合闸门；支持串行/多进程逐试验一致，正式模式强制绑定协议并恰好执行5000次。
+- 随机模拟新增逐试验不可覆盖检查点；中断重启时核对协议、参考报告、配置和种子，只补算缺失编号。
 - 新增 raw JSONL 原始证据层、多源冲突对账和 `digit-reconcile-jsonl` 标准 CSV 生成入口。
 - 新增 uniform、position frequency、shape transition 独立基线层，以及 LogLoss、Brier、排名、TopK、校准和 ECE 统一指标。
 - 新增 `research/observation/active/demoted/retired` 实战策略状态机；Frozen 未评估时禁止激活。
@@ -44,6 +49,14 @@
 
 ### Changed
 
+- `research_calibrated`默认锁定直选Top50，并纳入同成本Top50命中增量；Search、Validation、walk-forward和日报统一应用排除上期原号、豹子最多1个的候选策略。
+- Search与Validation改用统一严格统计闸门：至少500期、单侧`p<0.01`、25% lift、99% Wilson下界、3/3时间块和LogLoss/Brier 99%时间块bootstrap下界；任一阶段失败均不写参数。
+- 排名权重搜索与temperature/λ校准拆分：排名阶段固定概率刻度，只对排名前三结构穷举正数λ，并按LogLoss、Brier、TopK ECE依次裁决；正式Search保留已有参数作为incumbent基线。
+- Search未通过时不读取Validation；通过后先原子声明玩法/profile独立的一次性Validation锁，禁止重复打开同一Validation。
+- 在线Search将`λ=0`均匀候选纳入比较；均匀候选胜出时明确放弃且不再生成文本顺序伪Top50。当前fc3d影子状态因此回退为均匀放弃，pl3保持正权重研究候选。
+- 搜索产物新增实际评估特征配置，局部权重边界与声明统一为`[-1.5,1.5]`；源码指纹统一LF行尾，避免Windows/WSL检出差异导致状态失配。
+- 正式训练接入有界特征配置采样；Search磁盘缓存新增版本号并保存上期原号，旧缓存自动失效，缓存恢复后仍严格复用日常Top50口径。
+- 删除影子状态兼容迁移入口；源码指纹变化后旧状态必须拒绝，只有完整重训生成的新状态可以继续增量。
 - 加固`behavioral_context_v1`：Top50复用日常排除上期原号/豹子上限策略，配置值真实参与筛选；默认隔离最后500期Frozen，并把零放弃期、开发区全部完整500期块覆盖和稳定性纳入晋级闸门。
 - 锁定影子状态加载新增模型、彩种、源码和内容指纹校验；旧状态不匹配时拒绝增量预测，可通过`--shadow-state`显式切换新状态文件。
 - 同步仓库默认fc3d/pl3影子状态到当前源码指纹和最新版本化历史，并新增默认状态—当前源码端到端契约测试，防止单测全绿但`digit-predict-today`因状态过期而失败。

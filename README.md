@@ -1,6 +1,6 @@
 # 福彩3D / 排列三 learned ranker
 
-本仓库只保留当前 learned ranker 架构。历史 v1、概率 v2、在线概率 v3 的实现、CLI、测试、文档和报告已删除，不再提供兼容入口。
+正式预测仍只使用当前 learned ranker 架构。历史 v1、概率 v2、在线概率 v3 的实现、CLI、测试、文档和报告已删除；新建的`probability_v5`仅为隔离开发挑战器，不提供旧状态兼容，也不接入正式预测。
 
 > 彩票开奖结果高度随机。本项目仅用于可复核的历史研究，不保证预测有效、中奖或盈利。
 
@@ -15,7 +15,7 @@
 ```text
 本地官方历史 CSV
   → Search 参数探索
-  → Validation 参数选择
+  → Validation 一次性硬确认
   → 锁定参数与源码/数据指纹
   → Frozen Test 一次性评估
   → 未通过闸门时仅输出研究结果
@@ -59,7 +59,9 @@ make digit-learned-ranker-train \
   DIGIT_V4_OBJECTIVE_PROFILE=research_calibrated
 ```
 
-快速冒烟可设置 `DIGIT_V4_SMOKE=1`；冒烟结果不能用于效果结论。普通训练默认使用 `research_calibrated`，以相对均匀基线的 LogLoss、Brier、排名、ECE 和时间稳定性作为平滑研究目标；`all_hit_only` 仅保留为显式对照。
+快速冒烟可设置 `DIGIT_V4_SMOKE=1`；冒烟只写审计报告，不写参数文件。普通训练默认锁定直选Top50成本；排名阶段固定`temperature=1、λ=1`并严格优先Top50命中，只对排名前三结构后置校准。Search与walk-forward均复用日常“排除上期原号、豹子最多1个”的候选口径。`all_hit_only`仅保留为显式对照。
+
+正式Search先经过与Validation相同的统计闸门；未通过时不读取Validation。Search通过后先写入一次性Validation锁，再确认唯一胜者。两阶段均要求至少500期、单侧`p<0.01`、相对随机提升至少25%、99% Wilson下界、3/3时间块稳定，并要求LogLoss/Brier改善的99%时间块bootstrap下界高于0。任一阶段失败只保留审计报告，不写参数文件，不能消费Frozen Test。
 
 ## 在线自适应开发模拟
 
@@ -70,7 +72,7 @@ make digit-learned-ranker-adaptive \
   DIGIT_V4_FROZEN_TEST_PERIODS=500
 ```
 
-该命令只运行到 Frozen Test 之前：外层默认连续预测开发区最后500期（stride=1），每期更新20/50/150滚动状态，每10期只用块起点之前最近500期重新执行Inner Search/Validation。参数包含特征权重、temperature和均匀收缩系数 `λ∈{0,0.25,0.5,0.75,1}`。若Inner Search/Validation proper-scoring、LogLoss、Brier、ECE或时间块稳定性任一不通过，后续参数块使用严格均匀概率并标记 `abstained=true`，不进入主推荐。
+该命令只运行到 Frozen Test 之前：外层默认连续预测开发区最后500期（stride=1），每期更新20/50/150滚动状态，每10期只用块起点之前最近500期重新执行Inner Search/Validation。参数包含特征权重、temperature和均匀收缩系数 `λ∈{0,0.25,0.5,0.75,1}`。若Inner Search/Validation proper-scoring、LogLoss、Brier、Top50或时间块稳定性任一不通过，后续参数块使用严格均匀概率并标记 `abstained=true`，不进入主推荐。
 
 ## 可预测性审计
 
@@ -86,7 +88,29 @@ make digit-predictability-audit DIGIT_LOTTERY=fc3d
 make digit-online-gradient DIGIT_LOTTERY=fc3d
 ```
 
-该开发实验并行维护`learning_rate∈{0,0.01,0.02,0.05}`与`λ∈{0,0.25,0.5,0.75,1}`共20个候选学习器。`position_frequency`使用10倍L2，和值、数字对及趋势组使用5倍L2，两个形态特征固定为0。每期先预测，开奖后按最终收缩概率的LogLoss解析梯度更新下一期权重；使用梯度裁剪、L2收缩和权重边界。每10期仅用此前300期Search选择候选，再用紧邻此前100期确认。报告记录真实号码相对Top50边界的逐特征贡献、梯度和更新前后权重；未通过时部署概率保持均匀，并标记`evidenceStatus=exploratory_reused_development`。
+该开发实验并行维护`learning_rate∈{0,0.01,0.02,0.05}`与`λ∈{0,0.25,0.5,0.75,1}`共20个候选学习器。`position_frequency`使用10倍L2，和值、数字对及趋势组使用5倍L2，两个形态特征固定为0。每期先预测，开奖后按最终收缩概率的LogLoss解析梯度更新下一期权重；使用梯度裁剪、L2收缩和权重边界。每10期仅用此前300期Search选择候选，再用紧邻此前100期确认。均匀候选参与Search；当`λ=0`胜出时明确放弃且不生成伪Top50。报告记录真实号码相对Top50边界的逐特征贡献、梯度和更新前后权重；未通过时部署概率保持均匀，并标记`evidenceStatus=exploratory_reused_development`。
+
+## probability_v5隔离开发挑战器
+
+v5首版固定`uniform / ewma_position / ewma_pairwise / legacy_gradient`四个专家，使用先预测后更新的自适应指数权重。Uniform只作为永久专家，不再叠加动态`lambda`；Calibration只选择temperature。LogLoss/Brier使用原始1000类概率，raw Top50和日常“排除上期原号、豹子最多1个、补足50个”策略Top50分别报告，严格门槛使用策略后Top50。
+
+只验证执行链：
+
+```bash
+make digit-probability-v5-development \
+  DIGIT_LOTTERY=fc3d \
+  DIGIT_V5_SMOKE=1
+```
+
+随机模拟执行链smoke：
+
+```bash
+make digit-probability-v5-null-smoke \
+  DIGIT_LOTTERY=fc3d \
+  DIGIT_V5_NULL_WORKERS=2
+```
+
+smoke只使用Frozen之前50期。默认完整开发配置为`500 Search + 250 Calibration + 500开发Evaluation`，完整运行前必须先执行`make digit-probability-v5-register`锁定开发数据、源码、配置和Frozen边界；协议、开发报告和随机模拟报告均不可被不同内容覆盖。全流程随机模拟已支持确定性串行/多进程重放和逐试验检查点续跑，但正式5000次尚未运行，新的独立500期Validation也未打开，因此研究排名与正式推荐保持关闭。完整设计见[概率算法优化设计方案.md](概率算法优化设计方案.md)。
 
 稀疏v4已按锁定协议一次性运行最后500期Frozen，`fc3d`与`pl3`均未通过联合闸门；正式策略保持`research`。锁、只读防重跑标记和报告位于`state/learned_ranker_v4/`及`reports/frozen/`，不得重新运行Frozen或根据结果修改后回测同一测试段。
 
@@ -113,7 +137,7 @@ python scripts/digit_predict_today.py --lottery fc3d --json
 python scripts/digit_predict_today.py --lottery pl3 --json
 ```
 
-默认终端只展示最新开奖、准入状态、放弃原因和确定性中文说明。正式策略未激活时不展示号码；`researchTop50`、排序权重、相对均匀基线和前三项特征贡献只保留在`--json`审计输出中。排序权重不是真实开奖概率。
+默认终端只展示最新开奖、准入状态、放弃原因和确定性中文说明。正式策略未激活时不展示号码；存在正模型权重时，`researchTop50`、排序权重、相对均匀基线和前三项特征贡献只保留在`--json`审计输出中。`λ=0`表示没有可用号码排序，研究候选同样为空。排序权重不是真实开奖概率。
 
 可选DeepSeek文案层默认关闭，且不参与选号或排序。仓库提供`config/ai.example.json`结构；实际密钥放在被Git忽略的`config/ai.local.json`中：
 
@@ -189,7 +213,7 @@ uv run --python 3.11 --with-requirements requirements-dev.txt \
   --objective-profile all_hit_only
 ```
 
-该模式分别写出 direct/group/pool 参数，并在 Search/Validation 元数据中记录直选、组选和固定位置池预算曲线。预算只能由 Search 选择，Validation 只验证已选预算。Search 只选择唯一紧凑 v4 特征配置的权重，Validation 仅对最终配置运行一次。相邻目标期使用150期滚动状态；已完成目标矩阵以 canonical数据指纹、配置和目标索引为键保存为安全NPZ，进程重启后可恢复，不使用pickle。
+该模式分别评估 direct/group/pool，并在 Search/Validation 审计报告中记录直选、组选和固定位置池预算曲线。只有对应profile同时通过Search和Validation才写参数。预算只能由 Search 选择，Validation只验证已选预算。相邻目标期使用150期滚动状态；已完成目标矩阵以canonical数据指纹、配置和目标索引为键保存为安全NPZ，进程重启后可恢复，不使用pickle。
 
 v4形态特征使用组六、组三、豹子的理论先验 `72%/27%/1%` 作为基线，并计算形态转移与最近30期形态相对该先验的收缩偏离。理论比例本身不构成预测优势；形态权重只有在 Search/Validation 跨时间块稳定时才可采用。
 

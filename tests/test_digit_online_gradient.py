@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.analysis import digit_online_gradient as online_module
 from src.analysis import digit_online_gradient_variants as variants_module
 from src.analysis.digit_learned_features import BEHAVIORAL_FEATURE_NAMES, FEATURE_NAMES
 from src.analysis.digit_online_gradient import (
@@ -272,6 +273,72 @@ def test_online_gradient_research_is_prequential_and_recalibrates():
     assert report.to_dict()["metrics"]["periods"] == 20
 
 
+def test_online_search_can_select_uniform_and_abstains_without_ranked_signal():
+    config = OnlineGradientConfig(
+        development_end=500,
+        search_lookback=300,
+        validation_lookback=100,
+    )
+    uniform = online_module._CandidateState(
+        OnlineGradientCandidate(0.0, 0.0),
+        np.zeros(len(FEATURE_NAMES)),
+        [np.log(1000.0)] * 400,
+        [0.999] * 400,
+    )
+    worse = online_module._CandidateState(
+        OnlineGradientCandidate(0.01, 0.5),
+        np.zeros(len(FEATURE_NAMES)),
+        [np.log(1000.0) + 0.01] * 400,
+        [1.0] * 400,
+    )
+
+    selection = online_module._select_candidate([worse, uniform], 500, config)
+
+    assert selection.candidate.uniform_shrinkage == 0.0
+    assert selection.abstained is True
+    assert "Search选择λ=0" in selection.reasons
+
+
+def test_uniform_online_winner_emits_no_research_ranking(monkeypatch):
+    uniform_candidate = OnlineGradientCandidate(0.0, 0.0)
+
+    def select_uniform(states, block_start, config):
+        return online_module.OnlineGradientSelection(
+            block_start_index=block_start,
+            candidate=uniform_candidate,
+            search_mean_log_loss=np.log(1000.0),
+            validation_mean_log_loss=np.log(1000.0),
+            validation_mean_brier=0.999,
+            stable_blocks=3,
+            abstained=True,
+            reasons=("Search选择λ=0",),
+        )
+
+    monkeypatch.setattr(online_module, "_select_candidate", select_uniform)
+    report = run_online_gradient_research(
+        _history(130),
+        get_lottery_rule("fc3d"),
+        OnlineGradientConfig(
+            development_end=120,
+            outer_periods=20,
+            calibration_interval=10,
+            search_lookback=30,
+            validation_lookback=20,
+            warmup_history=50,
+            learning_rates=(0.0,),
+            shrinkages=(0.0, 0.5),
+        ),
+    )
+
+    assert all(item.research_rank is None for item in report.periods)
+    assert all(item.research_direct_hit is None for item in report.periods)
+    assert all(item.top50_shape_counts is None for item in report.periods)
+    metrics = report.to_dict()["metrics"]
+    assert metrics["researchTop50Periods"] == 0
+    assert metrics["researchTop50HitRate"] is None
+    assert metrics["researchTop50PValue"] is None
+
+
 def test_online_gradient_can_evaluate_the_same_policy_used_by_daily_top50():
     report = run_online_gradient_research(
         _repeated_history(130),
@@ -295,7 +362,10 @@ def test_online_gradient_can_evaluate_the_same_policy_used_by_daily_top50():
     assert payload["config"]["maximumTop50Triples"] == 0
     assert all(item.candidate_policy_rank is None for item in report.periods)
     assert not any(item.research_direct_hit for item in report.periods)
-    assert all(item.top50_shape_counts["豹子"] == 0 for item in report.periods)
+    assert all(
+        item.top50_shape_counts is None or item.top50_shape_counts["豹子"] == 0
+        for item in report.periods
+    )
 
 
 def test_variant_runner_builds_each_target_feature_matrix_once_and_reports_progress(

@@ -2,7 +2,10 @@
 
 import pytest
 
-from src.analysis.digit_daily_policy import select_daily_candidates
+from src.analysis.digit_daily_policy import (
+    rank_daily_candidates,
+    select_daily_candidates,
+)
 
 
 def test_daily_policy_excludes_latest_and_caps_but_keeps_one_triple():
@@ -42,3 +45,17 @@ def test_daily_policy_rejects_insufficient_eligible_candidates():
             top_k=50,
             maximum_triples=1,
         )
+
+
+def test_ranked_policy_prefix_matches_selected_candidates():
+    ranked = [f"{number:03d}" for number in range(1000)]
+
+    reordered = rank_daily_candidates(ranked, latest_exact="001", maximum_triples=1)
+    selected = select_daily_candidates(
+        ranked, latest_exact="001", top_k=50, maximum_triples=1
+    )
+
+    assert reordered[:50] == selected
+    assert len(reordered) == 1000
+    assert set(reordered) == set(ranked)
+    assert "001" not in reordered[:50]

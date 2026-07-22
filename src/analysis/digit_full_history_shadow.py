@@ -282,11 +282,15 @@ def train_full_history_shadow(
     latest_exact = "".join(
         str(int(latest_row[column])) for column in rule.number_columns
     )
-    research_top50 = select_daily_candidates(
-        (_CANDIDATES[int(index)] for index in order),
-        latest_exact=latest_exact,
-        top_k=50,
-        maximum_triples=1,
+    research_top50 = (
+        select_daily_candidates(
+            (_CANDIDATES[int(index)] for index in order),
+            latest_exact=latest_exact,
+            top_k=50,
+            maximum_triples=1,
+        )
+        if selection.candidate.uniform_shrinkage > 0
+        else ()
     )
     candidate_states = tuple(
         {
@@ -322,11 +326,20 @@ def train_full_history_shadow(
 def write_locked_shadow_state(
     result: FullHistoryShadowResult, path: str | Path
 ) -> Path:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
     payload = result.to_dict()
     payload["stateSha256"] = shadow_state_sha256(payload)
-    content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    return write_locked_shadow_payload(payload, path)
+
+
+def write_locked_shadow_payload(payload: Mapping[str, Any], path: str | Path) -> Path:
+    """以只写一次方式保存已带自校验指纹的影子状态。"""
+
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    document = dict(payload)
+    if document.get("stateSha256") != shadow_state_sha256(document):
+        raise ValueError("待写入影子状态的内容指纹不匹配")
+    content = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     try:
         descriptor = os.open(destination, flags, 0o444)
@@ -344,5 +357,6 @@ __all__ = [
     "shadow_state_sha256",
     "train_full_history_shadow",
     "validate_locked_shadow_state",
+    "write_locked_shadow_payload",
     "write_locked_shadow_state",
 ]

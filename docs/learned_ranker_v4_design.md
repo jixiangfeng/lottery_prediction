@@ -18,7 +18,7 @@
 
 ```text
 Search      参数探索
-Validation  参数选择
+Validation  唯一胜者硬确认
 Frozen Test 锁定后一次性评估
 ```
 
@@ -58,6 +58,10 @@ Frozen Test 不能参与：
 
 开发期可使用命中率 profile，但最终 Frozen Test 前必须锁定。
 
+普通训练的直选成本固定为Top50。排名阶段固定`temperature=1、λ=1`，Top50命中数严格优先，其他排名指标只裁决命中数相同的结构；只对排名前三结构穷举temperature和正数λ，并按LogLoss、Brier、TopK ECE依次校准。所有直选排名指标统一先应用日常候选策略：排除上期完全相同号码、豹子最多1个并按原排序补足；LogLoss和Brier仍使用未过滤的1000候选事前概率。
+
+Search先执行严格预确认，未通过时不得读取Validation。通过后原子声明每个玩法/profile的一次性Validation锁，再只确认Search锁定的唯一参数，不比较其他候选。两阶段均要求至少500期、单侧`p<0.01`、25% lift、99% Wilson下界、3/3时间块不低于随机，以及LogLoss/Brier改善的99%时间块bootstrap下界高于0。失败只写审计报告，不写参数；smoke同样不产出参数。
+
 ## 候选预算曲线
 
 同一套排序可同时统计：
@@ -79,6 +83,7 @@ Frozen Test 不能参与：
 - frozen canonical data fingerprint；
 - report fingerprint；
 - test segment 未用于选择。
+- `validationPassed=true`及空的`validationReasons`；
 
 允许在 `split.testEnd` 之后追加新开奖，但修改冻结前缀必须使证据失效。
 

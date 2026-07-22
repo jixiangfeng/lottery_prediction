@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from scripts.digit_learned_ranker import main as learned_ranker_main
+from src.analysis import digit_learned_ranker as ranker_module
 from src.analysis import digit_learned_ranker_search as ranker_search
 from src.analysis.digit_data import canonical_digit_data_sha256
 from src.analysis.digit_learned_features import (
@@ -100,6 +101,15 @@ def test_window_weights_are_canonical_fingerprintable_and_change_scores():
     )
 
 
+def test_source_fingerprint_bytes_ignore_platform_line_endings(tmp_path: Path):
+    source = tmp_path / "source.py"
+    source.write_bytes(b"first\nsecond\n")
+    lf = ranker_module._canonical_source_bytes(source)
+    source.write_bytes(b"first\r\nsecond\r\n")
+
+    assert ranker_module._canonical_source_bytes(source) == lf
+
+
 def test_active_feature_set_is_compact_and_finite():
     rule = get_lottery_rule("pl3")
     config = LearnedFeatureConfig(windows=(30, 50, 300, "all"))
@@ -180,7 +190,7 @@ def test_full_search_manifest_records_all_required_dimensions_and_profiles():
     )
     assert manifest["omissionCap"] == list(FULL_OMISSION_CAPS) == [20, 30, 50, 80]
     assert (
-        manifest["temperature"] == list(FULL_TEMPERATURES) == [0.1, 0.2, 0.5, 1.0, 2.0]
+        manifest["temperature"] == list(FULL_TEMPERATURES) == [0.5, 1.0, 2.0, 5.0, 10.0]
     )
     assert len(manifest["windowWeightProfiles"]) >= 4
     assert len(manifest["windowSets"]) >= 1
@@ -190,17 +200,20 @@ def test_full_search_manifest_records_all_required_dimensions_and_profiles():
         "max_perm",
         "mean_top_perm",
     ]
+    assert manifest["uniformShrinkage"] == [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]
+    assert manifest["abstentionUniformShrinkage"] == 0.0
     assert set(manifest["featureWeightRanges"]) == set(FEATURE_NAMES)
     assert manifest["objectiveProfiles"] == {
         name: list(weights) for name, weights in OBJECTIVE_PROFILES.items()
     }
     assert manifest["featureNormalization"] == "robust_zscore"
     assert manifest["recommendationConfig"] == {
-        "directTopK": [10],
+        "directTopK": [50],
         "groupTopK": [10],
         "positionPoolSize": [5],
         "groupDigitPoolSize": [7],
     }
+    assert manifest["sampling"]["evaluatedFeatureConfigs"] == []
     assert manifest["sampling"]["deterministic"] is True
     assert manifest["sampling"]["materializesFullCartesianProduct"] is False
     assert build_search_space_manifest(smoke=True)["space"] == manifest["space"]
@@ -212,10 +225,72 @@ def test_feature_config_sampling_is_seeded_bounded_and_uses_full_dimensions():
 
     assert first == second
     assert len(first) == 12
+    assert first[0] == LearnedFeatureConfig()
     assert {item.half_life for item in first}.issubset(set(FULL_HALF_LIVES))
     assert {item.omission_cap for item in first}.issubset(set(FULL_OMISSION_CAPS))
     assert len({item.window_weights for item in first}) >= 3
     assert len(sample_feature_configs(seed=17, smoke=True)) == 1
+
+
+def test_calibration_selection_uses_proper_scores_in_declared_order():
+    better_log_loss = {
+        "meanLogLoss": 6.8,
+        "meanBrierScore": 0.999,
+        "topKExpectedCalibrationError": 0.2,
+    }
+    better_brier_only = {
+        "meanLogLoss": 6.9,
+        "meanBrierScore": 0.8,
+        "topKExpectedCalibrationError": 0.0,
+    }
+
+    assert ranker_search._calibration_selection_key(
+        better_log_loss
+    ) > ranker_search._calibration_selection_key(better_brier_only)
+
+
+def test_strict_confirmation_requires_viability_and_positive_proper_scores(
+    monkeypatch,
+):
+    hits = []
+    for block_hits, block_size in ((17, 166), (17, 167), (16, 167)):
+        hits.extend([True] * block_hits)
+        hits.extend([False] * (block_size - block_hits))
+    passing = ranker_search._ConfirmationSequences(
+        kind="direct",
+        hits=tuple(hits),
+        random_probabilities=(0.05,) * 500,
+        log_loss_improvements=(0.01,) * 500,
+        brier_improvements=(0.001,) * 500,
+    )
+    monkeypatch.setattr(ranker_search, "_confirmation_sequences", lambda *args: passing)
+
+    passed, reasons, diagnostics = ranker_search._validation_confirmation(
+        (), LearnedRankerParams(direct_top_k=50), "direct_hit_only", seed=7
+    )
+
+    assert passed is True
+    assert reasons == ()
+    assert diagnostics["viability"]["conditions"] == {
+        "enoughPeriods": True,
+        "significant": True,
+        "relativeLift": True,
+        "confidenceLowerBound": True,
+        "stableAcrossBlocks": True,
+    }
+
+    failing_scores = replace(
+        passing,
+        log_loss_improvements=(-0.01,) * 500,
+    )
+    monkeypatch.setattr(
+        ranker_search, "_confirmation_sequences", lambda *args: failing_scores
+    )
+    passed, reasons, _ = ranker_search._validation_confirmation(
+        (), LearnedRankerParams(direct_top_k=50), "direct_hit_only", seed=7
+    )
+    assert passed is False
+    assert any("LogLoss" in reason for reason in reasons)
 
 
 def test_search_trial_serializes_canonical_window_weights():
@@ -465,9 +540,11 @@ def test_cli_train_evaluate_daily_smoke_for_each_supported_rule(
         str(output_dir),
     ]
 
-    subprocess.run(
+    trained = subprocess.run(
         [
             sys.executable,
+            "-X",
+            "utf8",
             str(script),
             "train",
             *common,
@@ -477,37 +554,19 @@ def test_cli_train_evaluate_daily_smoke_for_each_supported_rule(
             "3",
             "--smoke",
         ],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
-    subprocess.run(
-        [
-            sys.executable,
-            str(script),
-            "evaluate",
-            *common,
-            "--params",
-            str(params_path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+    assert trained.returncode == 2
+    assert not params_path.exists()
+    search_path = (
+        output_dir / "evaluations" / f"learned_ranker_v4_search_{lottery}.json"
     )
-    subprocess.run(
-        [sys.executable, str(script), "daily", *common, "--params", str(params_path)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert (output_dir / "evaluations" / f"learned_ranker_v4_{lottery}.json").exists()
-    daily_matches = list(
-        (output_dir / "daily" / lottery).glob(
-            f"{lottery}_learned_ranker_v4_*_daily_2026016.json"
-        )
-    )
-    assert len(daily_matches) == 1
+    metadata = json.loads(search_path.read_text(encoding="utf-8"))
+    assert metadata["smoke"] is True
+    assert metadata["validationEvaluated"] is True
+    assert metadata["validationPassed"] is False
 
 
 def test_two_fresh_processes_produce_same_core_daily_artifact(tmp_path: Path):
@@ -669,6 +728,7 @@ def test_daily_keeps_frozen_evaluation_valid_when_history_only_appends(tmp_path:
             "canonicalDataSha256": frozen_canonical,
             "split": split.to_dict(),
             "testSegmentUsedForSelection": False,
+            "validationPassed": True,
             "sourceFingerprint": learned_ranker_source_fingerprint(),
             "featureConfig": {
                 "windows": [5, "all"],
@@ -740,7 +800,7 @@ def test_prepared_target_disk_cache_round_trip(tmp_path):
             },
         }
     )
-    targets = (ranker_search._PreparedTarget(features, "123"),)
+    targets = (ranker_search._PreparedTarget(features, "123", "122"),)
     path = tmp_path / "prepared.npz"
 
     ranker_search._write_prepared_cache(path, targets)
@@ -748,6 +808,7 @@ def test_prepared_target_disk_cache_round_trip(tmp_path):
 
     assert restored is not None
     assert restored[0].actual_text == "123"
+    assert restored[0].latest_exact == "122"
     pd.testing.assert_frame_equal(restored[0].features, features)
 
 
@@ -770,6 +831,33 @@ def test_pool_hit_objective_uses_fixed_probability_mass_pool():
     assert objective == 0.0
 
 
+def test_direct_objective_uses_the_same_daily_candidate_policy_as_output():
+    candidates = [f"{number:03d}" for number in range(1000)]
+    features = pd.DataFrame({"candidate": candidates})
+    for name in FEATURE_NAMES:
+        features[name] = 0.0
+    features.loc[0, "position_frequency"] = 100.0
+    params = LearnedRankerParams(
+        weights={
+            name: (1.0 if name == "position_frequency" else 0.0)
+            for name in FEATURE_NAMES
+        },
+        direct_top_k=50,
+    )
+
+    raw = ranker_search._PreparedTarget(features, "000")
+    policy = ranker_search._PreparedTarget(features, "000", latest_exact="000")
+
+    assert (
+        ranker_search._objective((raw,), params, objective_profile="direct_hit_only")
+        == 1.0
+    )
+    assert (
+        ranker_search._objective((policy,), params, objective_profile="direct_hit_only")
+        == 0.0
+    )
+
+
 def test_profile_searches_share_prepared_target_cache(monkeypatch):
     history = _history(20)
     rule = get_lottery_rule("fc3d")
@@ -784,6 +872,7 @@ def test_profile_searches_share_prepared_target_cache(monkeypatch):
         objective_profile="direct_hit_only",
         direct_objective_top_k=50,
         position_objective_pool_size=3,
+        require_search_qualification=False,
     )
     calls = 0
     original = ranker_search._prepare_targets

@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from src.analysis.digit_daily_policy import rank_daily_candidates
 from src.analysis.digit_data import (
     canonical_digit_data_sha256,
     load_digit_csv,
@@ -453,6 +454,7 @@ def build_learned_ranker_plan(
     params: LearnedRankerParams,
     rule: LotteryRule,
     feature_config: LearnedFeatureConfig | None = None,
+    latest_exact: str | None = None,
 ) -> LearnedRankerPlan:
     """生成直选、组选、位置复式池和组选数字池。"""
 
@@ -474,7 +476,41 @@ def build_learned_ranker_plan(
         temperature=params.temperature,
         uniform_shrinkage=params.uniform_shrinkage,
     )
+    canonical_probabilities = np.asarray(
+        [
+            probability
+            for _, probability in sorted(
+                zip(candidates, probabilities), key=lambda item: item[0]
+            )
+        ],
+        dtype="<f8",
+    )
+    distribution_fingerprint = hashlib.sha256(
+        canonical_probabilities.tobytes()
+    ).hexdigest()
+    if params.uniform_shrinkage <= 0.0:
+        return LearnedRankerPlan(
+            rule_code=rule.code,
+            params_fingerprint=params_fingerprint(params, feature_config),
+            direct_candidates=(),
+            group_candidates=(),
+            position_pools=(),
+            group_digit_pool=(),
+            distribution_fingerprint=distribution_fingerprint,
+        )
     order = rank_candidate_indices(probabilities, candidates)
+    if latest_exact is not None:
+        ranked_texts = rank_daily_candidates(
+            (candidates[int(index)] for index in order),
+            latest_exact=latest_exact,
+            maximum_triples=1,
+        )
+        candidate_indices = {
+            candidate: index for index, candidate in enumerate(candidates)
+        }
+        order = np.asarray(
+            [candidate_indices[text] for text in ranked_texts], dtype=int
+        )
     direct = []
     for index in order[: params.direct_top_k]:
         contributions = {
@@ -528,18 +564,6 @@ def build_learned_ranker_plan(
             : params.group_digit_pool_size
         ]
     )
-    canonical_probabilities = np.asarray(
-        [
-            probability
-            for _, probability in sorted(
-                zip(candidates, probabilities), key=lambda item: item[0]
-            )
-        ],
-        dtype="<f8",
-    )
-    distribution_fingerprint = hashlib.sha256(
-        canonical_probabilities.tobytes()
-    ).hexdigest()
     return LearnedRankerPlan(
         rule_code=rule.code,
         params_fingerprint=params_fingerprint(params, feature_config),
@@ -559,6 +583,12 @@ def file_sha256(path: str | Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _canonical_source_bytes(path: Path) -> bytes:
+    """统一源码行尾，避免同一Git内容因Windows检出方式改变指纹。"""
+
+    return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 def learned_ranker_source_fingerprint() -> str:
@@ -589,7 +619,7 @@ def learned_ranker_source_fingerprint() -> str:
     digest = hashlib.sha256()
     for path in paths:
         digest.update(path.name.encode("utf-8"))
-        digest.update(path.read_bytes())
+        digest.update(_canonical_source_bytes(path))
     return digest.hexdigest()
 
 
@@ -850,7 +880,11 @@ def _daily_markdown(payload: Mapping[str, Any]) -> str:
     position_pools = " / ".join(
         "".join(str(value) for value in pool) for pool in plan["positionPools"]
     )
-    direct_count = int(np.prod([len(pool) for pool in plan["positionPools"]]))
+    direct_count = (
+        int(np.prod([len(pool) for pool in plan["positionPools"]]))
+        if plan["positionPools"]
+        else 0
+    )
     lines.extend(
         [
             "",
@@ -1041,7 +1075,18 @@ def generate_learned_ranker_daily(
     current_params_fingerprint = params_fingerprint(params, feature_config)
     state = build_history_state(history, rule, feature_config)
     features = build_candidate_features(state, rule)
-    plan = build_learned_ranker_plan(features, params, rule, feature_config)
+    latest_exact = (
+        "".join(str(value) for value in state.latest_numbers)
+        if state.latest_numbers is not None
+        else None
+    )
+    plan = build_learned_ranker_plan(
+        features,
+        params,
+        rule,
+        feature_config,
+        latest_exact=latest_exact,
+    )
     report_dir = Path(output_dir)
     process_learned_ranker_live_evaluations(
         history,

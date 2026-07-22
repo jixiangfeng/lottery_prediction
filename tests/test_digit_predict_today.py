@@ -132,6 +132,41 @@ def test_research_preview_requires_explicit_flag(capsys):
     assert "位置频率 +0.200" in output
 
 
+def test_uniform_abstention_does_not_create_fake_research_ranking(capsys):
+    selection = OnlineGradientSelection(
+        block_start_index=100,
+        candidate=OnlineGradientCandidate(0.0, 0.0),
+        search_mean_log_loss=float("nan"),
+        validation_mean_log_loss=float("nan"),
+        validation_mean_brier=0.999,
+        stable_blocks=0,
+        abstained=True,
+        reasons=("Search选择λ=0",),
+    )
+
+    candidates = digit_predict_today._predict_from_learners(
+        pd.DataFrame(), None, None, [], selection
+    )
+
+    assert candidates == []
+
+    result = _build_prediction_result(
+        lottery="fc3d",
+        latest_history_issue="2026191",
+        new_draws=[],
+        selection=selection,
+        research_candidates=candidates,
+        state_payload={"formalPredictionActivated": False},
+        latest_exact="906",
+    )
+    _print_text(result, show_research=True)
+    output = capsys.readouterr().out
+
+    assert result["researchTop50"] == []
+    assert "当前没有可用号码排序" in result["narrative"]
+    assert "λ=0表示没有可用号码排序" in output
+
+
 def test_deepseek_config_loads_from_local_json(tmp_path):
     path = tmp_path / "ai.local.json"
     path.write_text(

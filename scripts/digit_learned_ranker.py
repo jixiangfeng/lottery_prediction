@@ -8,6 +8,7 @@ import json
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -40,6 +41,7 @@ from src.analysis.digit_learned_ranker_search import (  # noqa: E402
     OBJECTIVE_PROFILES,
     LearnedSearchConfig,
     LearnedSplit,
+    sample_feature_configs,
     search_learned_ranker_params,
 )
 from src.analysis.digit_learned_ranker_walk_forward import (  # noqa: E402
@@ -88,7 +90,7 @@ def _parser() -> argparse.ArgumentParser:
         default="research_calibrated",
         help="默认使用平滑proper scoring；只在Search选择，Validation确认，Frozen不参与",
     )
-    train.add_argument("--direct-objective-top-k", type=int, default=10)
+    train.add_argument("--direct-objective-top-k", type=int, default=50)
     train.add_argument("--group-objective-top-k", type=int, default=10)
     train.add_argument("--position-objective-pool-size", type=int, default=5)
     train.add_argument("--seed", type=int, default=20260717)
@@ -140,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
             total_periods, frozen_test_periods=args.frozen_test_periods
         )
         smoke = bool(args.smoke)
-        report = run_adaptive_research(
+        adaptive_report = run_adaptive_research(
             history,
             rule,
             AdaptiveResearchConfig(
@@ -161,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         path = write_adaptive_report(
-            report,
+            adaptive_report,
             output_dir / "development" / f"learned_ranker_v4_adaptive_{rule.code}.json",
         )
         print(path)
@@ -179,8 +181,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.smoke
             else args.evaluation_stride
         )
-        feature_config = LearnedFeatureConfig()
-        feature_configs = (feature_config,)
+        feature_configs = sample_feature_configs(
+            seed=args.seed,
+            smoke=bool(args.smoke),
+        )
+        feature_config = feature_configs[0]
         config = LearnedSearchConfig(
             split=split,
             min_train_size=min_train,
@@ -207,20 +212,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if len(profiles) > 1 and args.params:
             raise ValueError("all_hit_only 会生成三套参数，不能指定单一 --params 路径")
-        prepared_target_cache = {}
+        prepared_target_cache: dict[Any, Any] = {}
+        all_profiles_passed = True
         for profile in profiles:
-            profile_config = replace(
-                config,
-                objective_profile=profile,
-                progress_checkpoint_path=output_dir
-                / f"{args.lottery}_{profile}_search_progress.json",
-            )
-            result = search_learned_ranker_params(
-                history,
-                rule,
-                profile_config,
-                prepared_target_cache=prepared_target_cache,
-            )
             params_path = (
                 Path(args.params)
                 if args.params
@@ -233,6 +227,37 @@ def main(argv: list[str] | None = None) -> int:
                     else f"{rule.code}_params.json"
                 )
             )
+            incumbent_params = (
+                load_params(params_path) if params_path.exists() else None
+            )
+            incumbent_feature_config = (
+                load_feature_config_from_params(params_path)
+                if params_path.exists()
+                else None
+            )
+            profile_config = replace(
+                config,
+                objective_profile=profile,
+                incumbent_params=incumbent_params,
+                incumbent_feature_config=incumbent_feature_config,
+                progress_checkpoint_path=output_dir
+                / f"{args.lottery}_{profile}_search_progress.json",
+                require_search_qualification=not bool(args.smoke),
+                validation_lock_path=(
+                    output_dir
+                    / "state"
+                    / "learned_ranker_v4"
+                    / f"{rule.code}_{profile}_validation_once.marker.json"
+                    if not args.smoke
+                    else None
+                ),
+            )
+            result = search_learned_ranker_params(
+                history,
+                rule,
+                profile_config,
+                prepared_target_cache=prepared_target_cache,
+            )
             metadata = {
                 "ruleCode": rule.code,
                 "csvSha256": file_sha256(args.csv),
@@ -242,10 +267,15 @@ def main(argv: list[str] | None = None) -> int:
                 "split": split.to_dict(),
                 "testSegmentUsedForSelection": False,
                 "objectiveProfile": profile,
+                "searchPassed": result.search_passed,
+                "searchReasons": list(result.search_reasons),
+                "validationEvaluated": result.validation_evaluated,
+                "validationPassed": result.validation_passed,
+                "validationReasons": list(result.validation_reasons),
+                "validationLockFingerprint": result.validation_lock_fingerprint,
                 "search": result.to_dict(),
                 "smoke": bool(args.smoke),
             }
-            save_params(result.params, params_path, metadata=metadata)
             search_suffix = f"_{profile}" if len(profiles) > 1 else ""
             search_path = (
                 output_dir
@@ -257,8 +287,16 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
-            print(params_path)
-        return 0
+            if result.search_passed and result.validation_passed:
+                save_params(result.params, params_path, metadata=metadata)
+                print(params_path)
+            else:
+                all_profiles_passed = False
+                print(
+                    f"参数未落盘：{profile} 未通过严格 Search/Validation，详见 {search_path}",
+                    file=sys.stderr,
+                )
+        return 0 if all_profiles_passed else 2
     if args.command == "evaluate":
         params = load_params(args.params)
         metadata = load_params_metadata(args.params)
@@ -272,6 +310,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         if metadata.get("testSegmentUsedForSelection") is not False:
             raise ValueError("参数文件未证明 frozen test 未参与选参")
+        if metadata.get("smoke") is True:
+            raise ValueError("smoke参数仅用于流水线检查，禁止进入Frozen")
+        if metadata.get("validationPassed") is not True:
+            reasons = metadata.get("validationReasons", [])
+            detail = (
+                "、".join(str(reason) for reason in reasons) or "缺少Validation确认"
+            )
+            raise ValueError(f"参数未通过Validation确认，禁止进入Frozen：{detail}")
         if metadata.get("ruleCode") not in {None, rule.code}:
             raise ValueError("参数文件玩法与 evaluate 玩法不匹配")
         chronological = sort_digit_dataframe_by_issue(
@@ -291,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         source_fingerprint = learned_ranker_source_fingerprint()
         if metadata.get("sourceFingerprint") != source_fingerprint:
             raise ValueError("evaluate 源码与训练时源码指纹不匹配")
-        report = run_learned_ranker_walk_forward(
+        learned_report = run_learned_ranker_walk_forward(
             history,
             rule,
             params,
@@ -306,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
             test_segment_used_for_selection=False,
         )
         markdown_path, json_path = write_walk_forward_report(
-            report, output_dir / "evaluations"
+            learned_report, output_dir / "evaluations"
         )
         print(markdown_path)
         print(json_path)

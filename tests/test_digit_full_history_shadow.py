@@ -144,3 +144,4 @@ def test_prospective_lineage_matches_active_versioned_state(lottery: str):
     )
     assert active["requiredPeriods"] == 500
     assert active["absorbedTrainingIssues"]
+    assert active["trainingMode"] == "full_retrain_from_official_history"

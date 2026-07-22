@@ -213,7 +213,7 @@ def _selection_reasons(
     reasons = []
     if result.search_objective <= 0:
         reasons.append("Inner Search proper-scoring未优于均匀基线")
-    if result.validation_objective <= 0:
+    if result.validation_objective is None or result.validation_objective <= 0:
         reasons.append("Inner Validation proper-scoring未优于均匀基线")
     if result.params.uniform_shrinkage <= 0:
         reasons.append("Search选择λ=0，模型退回均匀概率")
@@ -259,8 +259,11 @@ def _select_for_block(
             group_objective_top_k=config.group_top_k,
             position_objective_pool_size=config.position_pool_size,
             progress_checkpoint_path=checkpoint,
+            require_search_qualification=False,
         ),
     )
+    if result.validation_objective is None:
+        raise RuntimeError("自适应研究必须完成内部Validation")
     selected = replace(
         result.params,
         direct_top_k=config.direct_top_k,

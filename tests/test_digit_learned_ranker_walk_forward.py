@@ -7,6 +7,7 @@ import json
 from dataclasses import replace
 
 import pandas as pd
+import pytest
 
 import src.analysis.digit_learned_ranker_search as search_module
 import src.analysis.digit_learned_ranker_walk_forward as walk_forward_module
@@ -43,6 +44,7 @@ def test_search_and_validation_are_isolated_from_frozen_test_values():
         evaluation_stride=2,
         seed=7,
         feature_config=LearnedFeatureConfig(windows=(5, "all")),
+        require_search_qualification=False,
     )
 
     first = search_learned_ranker_params(original, rule, config)
@@ -69,6 +71,7 @@ def test_search_can_reproducibly_compare_feature_window_decay_and_omission_confi
         seed=11,
         feature_config=feature_configs[0],
         feature_configs=feature_configs,
+        require_search_qualification=False,
     )
 
     first = search_learned_ranker_params(_history(20), rule, config)
@@ -89,6 +92,7 @@ def test_validation_objective_never_selects_params(monkeypatch):
         evaluation_stride=2,
         seed=3,
         feature_config=LearnedFeatureConfig(windows=(5, "all")),
+        require_search_qualification=False,
     )
     random_params = replace(LearnedRankerParams(), temperature=0.5)
     local_bases = []
@@ -98,7 +102,7 @@ def test_validation_objective_never_selects_params(monkeypatch):
     def fake_prepare(chronological, rule, indices, feature_config):
         return (search_module._PreparedTarget(pd.DataFrame(), str(indices[0])),)
 
-    def fake_objective(targets, params):
+    def fake_objective(targets, params, *, objective_profile):
         is_validation = targets[0].actual_text == str(config.split.search_end)
         return 2.0 if is_validation and params.temperature == 0.5 else 1.0
 
@@ -108,16 +112,138 @@ def test_validation_objective_never_selects_params(monkeypatch):
 
     monkeypatch.setattr(search_module, "_prepare_targets", fake_prepare)
     monkeypatch.setattr(search_module, "_objective", fake_objective)
+    monkeypatch.setattr(
+        search_module,
+        "_calibration_metrics",
+        lambda targets, params: {
+            "meanLogLoss": abs(params.temperature - 1.0),
+            "meanBrierScore": 0.0,
+            "topKExpectedCalibrationError": 0.0,
+        },
+    )
     monkeypatch.setattr(search_module, "_local_params", fake_local)
     monkeypatch.setattr(
         search_module, "build_development_budget_curves", lambda targets, params: {}
     )
+    monkeypatch.setattr(
+        search_module,
+        "_validation_confirmation",
+        lambda *args, **kwargs: (True, (), {}),
+    )
 
     result = search_learned_ranker_params(_history(20), rule, config)
 
-    assert local_bases == [LearnedRankerParams()]
-    assert result.params == LearnedRankerParams()
+    ranking_expected = replace(LearnedRankerParams(), direct_top_k=50)
+    calibrated_expected = replace(ranking_expected, uniform_shrinkage=0.01)
+    assert local_bases == [ranking_expected]
+    assert result.params == calibrated_expected
     assert result.validation_objective == 1.0
+
+
+def test_search_rejection_does_not_open_or_prepare_validation(monkeypatch, tmp_path):
+    rule = get_lottery_rule("fc3d")
+    lock_path = tmp_path / "validation.marker.json"
+    config = LearnedSearchConfig(
+        split=LearnedSplit(search_end=12, validation_end=18, test_end=20),
+        min_train_size=8,
+        random_trials=1,
+        local_trials=0,
+        evaluation_stride=2,
+        feature_config=LearnedFeatureConfig(windows=(5, "all")),
+        validation_lock_path=lock_path,
+    )
+    prepared_indices = []
+
+    def fake_prepare(chronological, rule, indices, feature_config):
+        prepared_indices.append(tuple(indices))
+        return (search_module._PreparedTarget(pd.DataFrame(), "000"),)
+
+    monkeypatch.setattr(search_module, "_prepare_targets", fake_prepare)
+    monkeypatch.setattr(search_module, "_objective", lambda *args, **kwargs: 1.0)
+    monkeypatch.setattr(
+        search_module,
+        "_calibration_metrics",
+        lambda *args: {
+            "meanLogLoss": 1.0,
+            "meanBrierScore": 1.0,
+            "topKExpectedCalibrationError": 1.0,
+        },
+    )
+    monkeypatch.setattr(
+        search_module, "build_development_budget_curves", lambda *args: {}
+    )
+    monkeypatch.setattr(
+        search_module,
+        "_validation_confirmation",
+        lambda *args, **kwargs: (False, ("Search未显著高于随机",), {}),
+    )
+
+    result = search_learned_ranker_params(
+        _history(20), rule, config, prepared_target_cache={}
+    )
+
+    assert prepared_indices == [(8, 10)]
+    assert result.search_passed is False
+    assert result.validation_evaluated is False
+    assert result.validation_objective is None
+    assert not lock_path.exists()
+
+
+def test_validation_lock_is_claimed_before_the_only_validation_read(
+    monkeypatch, tmp_path
+):
+    rule = get_lottery_rule("pl3")
+    lock_path = tmp_path / "validation.marker.json"
+    config = LearnedSearchConfig(
+        split=LearnedSplit(search_end=12, validation_end=18, test_end=20),
+        min_train_size=8,
+        random_trials=1,
+        local_trials=0,
+        evaluation_stride=2,
+        feature_config=LearnedFeatureConfig(windows=(5, "all")),
+        validation_lock_path=lock_path,
+    )
+    confirmation_calls = 0
+
+    def fake_prepare(chronological, rule, indices, feature_config):
+        if indices[0] == config.split.search_end:
+            assert lock_path.exists()
+        return (search_module._PreparedTarget(pd.DataFrame(), str(indices[0])),)
+
+    def fake_confirmation(*args, **kwargs):
+        nonlocal confirmation_calls
+        confirmation_calls += 1
+        if confirmation_calls == 1:
+            return True, (), {"phase": "search"}
+        return False, ("Validation未通过",), {"phase": "validation"}
+
+    monkeypatch.setattr(search_module, "_prepare_targets", fake_prepare)
+    monkeypatch.setattr(search_module, "_objective", lambda *args, **kwargs: 1.0)
+    monkeypatch.setattr(
+        search_module,
+        "_calibration_metrics",
+        lambda *args: {
+            "meanLogLoss": 1.0,
+            "meanBrierScore": 1.0,
+            "topKExpectedCalibrationError": 1.0,
+        },
+    )
+    monkeypatch.setattr(
+        search_module, "build_development_budget_curves", lambda *args: {}
+    )
+    monkeypatch.setattr(search_module, "_validation_confirmation", fake_confirmation)
+
+    result = search_learned_ranker_params(
+        _history(20), rule, config, prepared_target_cache={}
+    )
+
+    assert confirmation_calls == 2
+    assert result.search_passed is True
+    assert result.validation_evaluated is True
+    assert result.validation_passed is False
+    assert result.validation_lock_fingerprint
+    with pytest.raises(RuntimeError, match="禁止重复使用"):
+        search_module._claim_validation_lock(lock_path, {"second": True})
 
 
 def test_frozen_walk_forward_is_repeatable_and_reports_exact_group_baseline(tmp_path):

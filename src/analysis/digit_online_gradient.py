@@ -169,9 +169,9 @@ class OnlineGradientPeriod:
     actual_text: str
     research_actual_probability: float
     deployed_actual_probability: float
-    research_rank: int
+    research_rank: int | None
     candidate_policy_rank: int | None
-    research_direct_hit: bool
+    research_direct_hit: bool | None
     research_log_loss: float
     deployed_log_loss: float
     research_brier: float
@@ -181,7 +181,7 @@ class OnlineGradientPeriod:
     boundary_contributions: dict[str, float]
     weights_before: dict[str, float]
     weights_after: dict[str, float]
-    top50_shape_counts: dict[str, int]
+    top50_shape_counts: dict[str, int] | None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -224,17 +224,22 @@ class OnlineGradientReport:
 
     def to_dict(self) -> dict[str, object]:
         active = [item for item in self.periods if not item.abstained]
+        ranked = [item for item in self.periods if item.research_direct_hit is not None]
         research_log = float(np.mean([item.research_log_loss for item in self.periods]))
         deployed_log = float(np.mean([item.deployed_log_loss for item in self.periods]))
         research_brier = float(np.mean([item.research_brier for item in self.periods]))
         deployed_brier = float(np.mean([item.deployed_brier for item in self.periods]))
-        top50_hits = sum(item.research_direct_hit for item in self.periods)
-        top50_p_value = float(
-            binom.sf(
-                top50_hits - 1,
-                len(self.periods),
-                self.config.direct_top_k / 1000,
+        top50_hits = sum(bool(item.research_direct_hit) for item in ranked)
+        top50_p_value = (
+            float(
+                binom.sf(
+                    top50_hits - 1,
+                    len(ranked),
+                    self.config.direct_top_k / 1000,
+                )
             )
+            if ranked
+            else None
         )
         block_log_losses = tuple(
             float(block.mean())
@@ -249,7 +254,9 @@ class OnlineGradientReport:
             frozen_reasons.append("Frozen LogLoss未优于均匀")
         if research_brier >= _UNIFORM_BRIER:
             frozen_reasons.append("Frozen Brier未优于均匀")
-        if top50_p_value >= 0.05:
+        if top50_p_value is None:
+            frozen_reasons.append("Frozen没有可评估的非均匀Top50排名")
+        elif top50_p_value >= 0.05:
             frozen_reasons.append("Frozen Top50未达到p<0.05")
         if stable_blocks < 2:
             frozen_reasons.append("Frozen稳定时间块不足2/3")
@@ -312,13 +319,16 @@ class OnlineGradientReport:
                 "researchMeanBrier": research_brier,
                 "deployedMeanBrier": deployed_brier,
                 "uniformBrier": _UNIFORM_BRIER,
-                "researchTop50HitRate": float(
-                    np.mean([item.research_direct_hit for item in self.periods])
+                "researchTop50HitRate": (
+                    float(np.mean([bool(item.research_direct_hit) for item in ranked]))
+                    if ranked
+                    else None
                 ),
+                "researchTop50Periods": len(ranked),
                 "researchTop50Hits": top50_hits,
                 "researchTop50PValue": top50_p_value,
                 "activeTop50HitRate": (
-                    float(np.mean([item.research_direct_hit for item in active]))
+                    float(np.mean([bool(item.research_direct_hit) for item in active]))
                     if active
                     else None
                 ),
@@ -465,11 +475,8 @@ def _select_candidate(
     if any(len(state.log_losses) < required for state in states):
         raise ValueError("候选历史不足以执行Search/Validation校准")
     search_slice = slice(-required, -config.validation_lookback)
-    model_states = [state for state in states if state.candidate.uniform_shrinkage > 0]
-    if not model_states:
-        raise ValueError("在线梯度至少需要一个λ>0的模型候选")
     selected = min(
-        model_states,
+        states,
         key=lambda state: (
             float(np.mean(state.log_losses[search_slice])),
             float(np.mean(state.brier_scores[search_slice])),
@@ -582,9 +589,18 @@ def run_online_gradient_research(
             selected_learner = learners[selected_index]
             selected_step = steps[selected_index]
             probabilities = selected_step.final_probabilities
-            order = rank_candidate_indices(probabilities, _CANDIDATES)
-            rank = int(np.flatnonzero(order == actual_index)[0]) + 1
-            if config.daily_candidate_policy:
+            has_research_ranking = current_selection.candidate.uniform_shrinkage > 0
+            order = (
+                rank_candidate_indices(probabilities, _CANDIDATES)
+                if has_research_ranking
+                else np.asarray([], dtype=int)
+            )
+            rank = (
+                int(np.flatnonzero(order == actual_index)[0]) + 1
+                if has_research_ranking
+                else None
+            )
+            if has_research_ranking and config.daily_candidate_policy:
                 if history_state.latest_numbers is None:
                     raise RuntimeError("日常候选策略缺少上期开奖")
                 latest_exact = "".join(
@@ -602,21 +618,30 @@ def run_online_gradient_research(
                     if actual_text in selected_candidates
                     else None
                 )
-            else:
+            elif has_research_ranking:
                 selected_indices = tuple(
                     int(index) for index in order[: config.direct_top_k]
                 )
-                candidate_policy_rank = rank if rank <= config.direct_top_k else None
-            boundary_index = selected_indices[-1]
-            contributions = selected_learner.weights * (
-                matrix[actual_index] - matrix[boundary_index]
-            )
-            top50_shape_counts = {"组六": 0, "组三": 0, "豹子": 0}
-            for candidate_index in selected_indices:
-                digits = tuple(
-                    int(value) for value in _CANDIDATES[int(candidate_index)]
+                candidate_policy_rank = (
+                    rank if rank is not None and rank <= config.direct_top_k else None
                 )
-                top50_shape_counts[classify_digit_shape(digits)] += 1
+            else:
+                selected_indices = ()
+                candidate_policy_rank = None
+            if selected_indices:
+                boundary_index = selected_indices[-1]
+                contributions = selected_learner.weights * (
+                    matrix[actual_index] - matrix[boundary_index]
+                )
+                top50_shape_counts = {"组六": 0, "组三": 0, "豹子": 0}
+                for candidate_index in selected_indices:
+                    digits = tuple(
+                        int(value) for value in _CANDIDATES[int(candidate_index)]
+                    )
+                    top50_shape_counts[classify_digit_shape(digits)] += 1
+            else:
+                contributions = np.zeros_like(selected_learner.weights)
+                top50_shape_counts = None
             deployed_probability = (
                 1.0 / 1000.0
                 if current_selection.abstained
@@ -639,7 +664,11 @@ def run_online_gradient_research(
                     deployed_actual_probability=deployed_probability,
                     research_rank=rank,
                     candidate_policy_rank=candidate_policy_rank,
-                    research_direct_hit=candidate_policy_rank is not None,
+                    research_direct_hit=(
+                        candidate_policy_rank is not None
+                        if has_research_ranking
+                        else None
+                    ),
                     research_log_loss=selected_step.log_loss,
                     deployed_log_loss=-math.log(deployed_probability),
                     research_brier=selected_step.brier,

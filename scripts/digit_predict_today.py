@@ -160,6 +160,8 @@ def _predict_from_learners(
     learners: list[_CandidateState],
     selection: OnlineGradientSelection,
 ) -> list[dict[str, object]]:
+    if selection.candidate.uniform_shrinkage <= 0:
+        return []
     online_config = config.online_config(len(chronological))
     next_state = build_history_state(chronological, rule, config.feature_config)
     next_matrix = build_candidate_features(next_state, rule)[
@@ -428,20 +430,27 @@ def _print_text(result: dict[str, object], *, show_research: bool = False) -> No
         print(f"候选：{', '.join(result['userVisibleCandidates'])}")
     elif show_research:
         research_candidates = list(result.get("researchCandidates", []))[:10]
-        print("研究观察Top10（未通过准入，不是正式推荐）：")
-        print("、".join(str(item["number"]) for item in research_candidates))
-        print("前三名排序依据：")
-        for item in research_candidates[:3]:
-            contributions = "，".join(
-                f"{part['featureLabel']} {float(part['contribution']):+.3f}"
-                for part in item["topContributions"]
-            )
-            print(
-                f"- {item['number']}：相对均匀排序权重 "
-                f"{float(item['relativeToUniform']):.3f} 倍；{contributions}"
-            )
+        if research_candidates:
+            print("研究观察Top10（未通过准入，不是正式推荐）：")
+            print("、".join(str(item["number"]) for item in research_candidates))
+            print("前三名排序依据：")
+            for item in research_candidates[:3]:
+                contributions = "，".join(
+                    f"{part['featureLabel']} {float(part['contribution']):+.3f}"
+                    for part in item["topContributions"]
+                )
+                print(
+                    f"- {item['number']}：相对均匀排序权重 "
+                    f"{float(item['relativeToUniform']):.3f} 倍；{contributions}"
+                )
+        else:
+            print("候选：无（λ=0表示没有可用号码排序）")
     else:
-        print("候选：无（研究排序仅保留在 --json 审计输出中）")
+        signal = dict(result.get("signal", {}))
+        if float(signal.get("modelWeight", 0.0)) <= 0:
+            print("候选：无（λ=0表示没有可用号码排序）")
+        else:
+            print("候选：无（研究排序仅保留在 --json 审计输出中）")
     ai = dict(result.get("ai", {}))
     if ai.get("requested") and ai.get("status") == "failed":
         print(f"AI润色：失败，已回退到确定性说明（{ai.get('error', '未知错误')}）")

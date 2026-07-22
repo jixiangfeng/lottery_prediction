@@ -87,6 +87,24 @@ def test_plan_distribution_is_independent_of_candidate_row_order():
     )
 
 
+def test_uniform_shrinkage_has_no_ranked_plan():
+    rule = get_lottery_rule("fc3d")
+    state = build_history_state(_history(), rule, LearnedFeatureConfig())
+    features = build_candidate_features(state, rule)
+
+    plan = build_learned_ranker_plan(
+        features,
+        LearnedRankerParams(uniform_shrinkage=0.0, direct_top_k=50),
+        rule,
+        latest_exact="000",
+    )
+
+    assert plan.direct_candidates == ()
+    assert plan.group_candidates == ()
+    assert plan.position_pools == ()
+    assert plan.group_digit_pool == ()
+
+
 def test_parameter_file_detects_metadata_tampering(tmp_path):
     path = tmp_path / "params.json"
     save_params(

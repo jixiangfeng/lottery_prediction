@@ -25,7 +25,7 @@
 - `LearnedRankerParams`：固定权重、温度和候选成本。
 - `score_candidates(features, params)`：执行固定线性评分。
 - `build_learned_ranker_plan(features, params, rule)`：生成直选、组选与位置池研究方案。
-- `search_learned_ranker_params(history, rule, config)`：只使用 Search/Validation 选参。
+- `search_learned_ranker_params(history, rule, config)`：只用Search选择唯一参数，并返回Validation硬确认结果与失败原因。
 - `run_learned_ranker_walk_forward(history, rule, params, split)`：锁定参数后评估 Frozen Test。
 - `generate_learned_ranker_daily(...)`：生成研究日报和不可覆盖快照。
 - `build_candidate_budget_curve(periods)`：直选预算曲线。
@@ -34,6 +34,7 @@
 - `resolve_activation(...)`：生成 common/direct/group 分项激活语义。
 - `run_behavioral_context_challenge(...)`：在相同开发目标期上运行核心A、自由行为B和单调风险C组；C是预注册主挑战组，按日常Top50策略和配对指标评估。
 - `validate_locked_shadow_state(...)`：校验影子状态的模型身份、彩种、源码指纹和内容指纹。
+- `refresh_unobserved_shadow_state(...)`：仅迁移尚无前瞻观察且候选权重不变的兼容影子状态，重新计算选择和内容指纹。
 
 ## CLI
 
@@ -52,6 +53,8 @@ scripts/digit_predict_today.py --lottery fc3d|pl3 [--shadow-state PATH] [--no-fe
 - `sum_prob` 才能称为组选概率；
 - `max_perm` 与 `mean_top_perm` 只能称为 score/aggregation；
 - softmax 数值是排序归一化值，不应解释为真实开奖概率；
+- `λ=0`表示均匀放弃状态，不得构造或展示确定性TopK排序；
+- `validationPassed=false`、缺少Validation证明或`smoke=true`的参数禁止进入Frozen；
 - 正式策略未激活时，`userVisibleCandidates`必须为空，研究候选只能出现在JSON审计字段；
 - `--show-research`只改变终端审计显示，不改变`userVisibleCandidates`或准入状态；
 - AI只负责文案，不得接收、生成或修改内部研究候选；

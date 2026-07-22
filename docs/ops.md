@@ -12,6 +12,7 @@
 ```bash
 make digit-fetch DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
 make digit-predict-today DIGIT_LOTTERY=fc3d
+make digit-probability-v5-development DIGIT_LOTTERY=fc3d DIGIT_V5_SMOKE=1
 make digit-behavioral-context DIGIT_LOTTERY=fc3d
 make digit-learned-ranker-train DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
 make digit-learned-ranker-evaluate DIGIT_LOTTERY=fc3d DIGIT_CSV=data/fc3d/official_history.csv
@@ -35,9 +36,16 @@ AI失败不会改变模型结果，命令会保留确定性说明，并在`ai.st
 
 冒烟可设置 `DIGIT_V4_SMOKE=1`；不得将 smoke 结果用于效果结论。
 
+`probability_v5`使用独立的`DIGIT_V5_SMOKE=1`。该入口至少排除最新500期Frozen，只写`reports/development/`报告，不读取或生成任何v4/v5模型状态。完整开发前必须先执行`make digit-probability-v5-register`；协议和报告相同内容可重复确认，不同内容禁止覆盖。报告中的`validationOpened`、`promotionPassed`、`researchRankingEnabled`和`recommendationEnabled`必须全部为`false`；不得把开发Evaluation命名为Validation，也不得将smoke报告加入模型总账。
+
+`make digit-probability-v5-null-smoke`会在均匀随机历史上完整重放四专家、在线聚合、Calibration和联合闸门。smoke次数必须少于5000且永不通过随机模拟闸门；正式模式必须绑定已登记协议和不可覆盖开发报告、提供`--checkpoint-dir`并恰好运行5000次。检查点按试验编号独立只写一次，重启时校验身份并只计算缺失编号。正式任务在全长度性能基准完成前不得启动。
+
+训练参数会记录`validationPassed`和`validationReasons`。参数即使为审计而落盘，只要Validation未同时通过概率质量、目标预算命中和时间稳定性，`digit-learned-ranker-evaluate`就会在读取Frozen之前退出。
+
 ## 冻结边界
 
 - 参数文件必须保留切分、数据、源码、参数和产物指纹。
+- 参数文件必须为`validationPassed=true`且`smoke=false`。
 - Frozen Test 不参与参数或候选预算选择。
 - canonical 校验只覆盖训练时 `split.testEnd` 冻结前缀。
 - 可以追加冻结边界之后的新开奖；修改冻结前缀必须使评估失效。
@@ -60,9 +68,11 @@ AI失败不会改变模型结果，命令会保留确定性说明，并在`ai.st
 6. 影子状态源码指纹不匹配：保留旧文件作为审计证据，生成新路径后显式切换，不得覆盖旧状态：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\digit_full_history_shadow.py --lottery fc3d --csv data/fc3d/official_history.csv --output state/learned_ranker_v4/full_history_shadow_fc3d_current.json
-.\.venv\Scripts\python.exe scripts\digit_predict_today.py --lottery fc3d --shadow-state state/learned_ranker_v4/full_history_shadow_fc3d_current.json --no-fetch
+.\.venv\Scripts\python.exe -X utf8 scripts\digit_full_history_shadow.py --lottery fc3d --csv data/fc3d/official_history.csv --output state/learned_ranker_v4/full_history_shadow_fc3d_current.json
+.\.venv\Scripts\python.exe -X utf8 scripts\digit_predict_today.py --lottery fc3d --shadow-state state/learned_ranker_v4/full_history_shadow_fc3d_current.json --no-fetch
 ```
+
+不提供旧状态迁移入口；源码指纹变化后必须从官方历史完整重训，并把旧状态保留为审计证据。
 
 行为v1～v4已完成全部固定块验证并封存，不再作为常规运维任务运行。统一证据总账使用：
 

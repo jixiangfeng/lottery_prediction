@@ -7,6 +7,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from scripts.digit_learned_ranker import main
 from src.analysis.digit_learned_features import LearnedFeatureConfig
 from src.analysis.digit_learned_ranker import (
@@ -71,17 +73,24 @@ def test_train_cli_records_explicit_frozen_window_and_objective_profile(
                 "direct_focus",
             ]
         )
-        == 0
+        == 2
     )
 
     params_path = output_dir / "state" / "learned_ranker_v4" / "fc3d_params.json"
-    metadata = json.loads(params_path.read_text(encoding="utf-8"))["metadata"]
+    assert not params_path.exists()
+    search_path = output_dir / "evaluations" / "learned_ranker_v4_search_fc3d.json"
+    metadata = json.loads(search_path.read_text(encoding="utf-8"))
     assert metadata["split"] == {"searchEnd": 5, "validationEnd": 10, "testEnd": 20}
     assert metadata["objectiveProfile"] == "direct_focus"
     assert metadata["search"]["objectiveProfile"] == "direct_focus"
+    evaluated = metadata["search"]["searchSpaceManifest"]["sampling"][
+        "evaluatedFeatureConfigs"
+    ]
+    assert len(evaluated) == 16
+    assert len({json.dumps(item, sort_keys=True) for item in evaluated}) == 16
 
 
-def test_train_cli_all_hit_profiles_writes_three_parameter_artifacts(tmp_path: Path):
+def test_train_cli_all_hit_profiles_do_not_write_unconfirmed_params(tmp_path: Path):
     csv_path = tmp_path / "fc3d.csv"
     output_dir = tmp_path / "reports"
     _write_csv(csv_path, periods=20)
@@ -103,13 +112,17 @@ def test_train_cli_all_hit_profiles_writes_three_parameter_artifacts(tmp_path: P
                 "--smoke",
             ]
         )
-        == 0
+        == 2
     )
 
     state_dir = output_dir / "state" / "learned_ranker_v4"
     for profile in ("direct_hit_only", "group_hit_only", "pool_hit_only"):
         params_path = state_dir / f"fc3d_{profile}_params.json"
-        metadata = json.loads(params_path.read_text(encoding="utf-8"))["metadata"]
+        assert not params_path.exists()
+        search_path = (
+            output_dir / "evaluations" / f"learned_ranker_v4_search_fc3d_{profile}.json"
+        )
+        metadata = json.loads(search_path.read_text(encoding="utf-8"))
         assert metadata["objectiveProfile"] == profile
         assert metadata["search"]["objectiveProfile"] == profile
         curves = metadata["search"]["budgetCurves"]
@@ -177,6 +190,27 @@ def test_daily_cli_writes_reproducible_fingerprinted_artifacts(tmp_path: Path):
     assert payload["mode"] == "研究模式，不接入主推荐"
     assert len(payload["plan"]["directCandidates"]) == 10
     assert payload["recentEvaluation"] == {}
+
+
+def test_uniform_daily_has_no_research_or_formal_ranking(tmp_path: Path):
+    csv_path = tmp_path / "fc3d.csv"
+    params_path = tmp_path / "params.json"
+    output_dir = tmp_path / "reports"
+    _write_csv(csv_path)
+    save_params(LearnedRankerParams(uniform_shrinkage=0.0), params_path)
+
+    _, daily_path, _ = generate_learned_ranker_daily(
+        "fc3d", csv_path, params_path, output_dir=output_dir
+    )
+    payload = json.loads(daily_path.read_text(encoding="utf-8"))
+
+    assert payload["abstained"] is True
+    assert payload["plan"]["directCandidates"] == []
+    assert payload["plan"]["groupCandidates"] == []
+    assert payload["plan"]["positionPools"] == []
+    assert payload["plan"]["groupDigitPool"] == []
+    assert payload["plan"]["mainRecommendation"]["directCandidates"] == []
+    assert payload["plan"]["research"]["directCandidates"] == []
 
 
 def test_daily_does_not_promote_mismatched_frozen_evaluation(tmp_path: Path):
@@ -322,6 +356,7 @@ def test_evaluate_uses_frozen_training_split_and_daily_accepts_only_matching_rep
             },
             "split": split.to_dict(),
             "testSegmentUsedForSelection": False,
+            "validationPassed": True,
         },
     )
 
@@ -358,6 +393,37 @@ def test_evaluate_uses_frozen_training_split_and_daily_accepts_only_matching_rep
     assert daily["evaluationValidation"]["fingerprintValid"] is True
     assert daily["evaluationValidation"]["frozenTestMatched"] is True
     assert daily["recentEvaluation"]["50"]["periods"] == 6
+
+
+def test_evaluate_rejects_params_without_validation_confirmation(tmp_path: Path):
+    csv_path = tmp_path / "fc3d.csv"
+    params_path = tmp_path / "params.json"
+    _write_csv(csv_path)
+    save_params(
+        LearnedRankerParams(),
+        params_path,
+        metadata={
+            "split": LearnedSplit(
+                search_end=10, validation_end=14, test_end=20
+            ).to_dict(),
+            "testSegmentUsedForSelection": False,
+            "validationPassed": False,
+            "validationReasons": ["Validation Top50命中率未优于随机基线"],
+        },
+    )
+
+    with pytest.raises(ValueError, match="未通过Validation确认"):
+        main(
+            [
+                "evaluate",
+                "--lottery",
+                "fc3d",
+                "--csv",
+                str(csv_path),
+                "--params",
+                str(params_path),
+            ]
+        )
 
 
 def test_different_params_are_isolated_without_overwriting_daily_artifacts(

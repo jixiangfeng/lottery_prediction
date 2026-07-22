@@ -44,6 +44,13 @@ def deterministic_prediction_narrative(result: Mapping[str, object]) -> str:
             if new_draws
             else "本次使用当前本地历史，"
         )
+        signal_value = result.get("signal", {})
+        signal = signal_value if isinstance(signal_value, Mapping) else {}
+        if float(signal.get("modelWeight", 0.0)) <= 0:
+            return (
+                f"{update_text}Search已回退到均匀基线，当前没有可用号码排序；"
+                "继续收集前瞻证据，但不生成研究或正式候选。"
+            )
         return (
             f"{update_text}但影子模型尚未通过正式准入，"
             "因此不展示候选号码；内部排序仅用于继续收集前瞻证据。"

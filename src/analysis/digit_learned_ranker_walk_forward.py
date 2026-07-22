@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import binom
 
+from src.analysis.digit_daily_policy import rank_daily_candidates
 from src.analysis.digit_data import (
     normalize_digit_dataframe,
     sort_digit_dataframe_by_issue,
@@ -197,14 +198,25 @@ def _period(
         uniform_shrinkage=params.uniform_shrinkage,
     )
     order = rank_candidate_indices(probabilities, texts)
+    ranked_texts = [texts[int(candidate_index)] for candidate_index in order]
+    if state.latest_numbers is not None:
+        latest_exact = "".join(str(value) for value in state.latest_numbers)
+        ranked_texts = list(
+            rank_daily_candidates(
+                ranked_texts,
+                latest_exact=latest_exact,
+                maximum_triples=1,
+            )
+        )
     actual_text = "".join(str(int(target[column])) for column in rule.number_columns)
     candidate_indices = {text: position for position, text in enumerate(texts)}
     try:
         actual_index = candidate_indices[actual_text]
     except KeyError as exc:
         raise ValueError(f"候选集合缺少真实号码：{actual_text}") from exc
-    actual_rank = int(np.flatnonzero(order == actual_index)[0]) + 1
+    actual_rank = ranked_texts.index(actual_text) + 1
     actual_probability = float(probabilities[actual_index])
+    policy_top_index = candidate_indices[ranked_texts[0]]
     brier = float(np.sum(probabilities**2) - 2 * actual_probability + 1.0)
     groups = aggregate_group_candidates(
         texts, probabilities, aggregation=params.group_aggregation
@@ -245,8 +257,8 @@ def _period(
         group_random_probability=sum(item.permutations for item in top_groups) / 1000.0,
         group_rank=group_rank,
         position_ranks=(position_ranks[0], position_ranks[1], position_ranks[2]),
-        top_probability=float(probabilities[int(order[0])]),
-        top_hit=int(order[0]) == actual_index,
+        top_probability=float(probabilities[policy_top_index]),
+        top_hit=policy_top_index == actual_index,
     )
 
 

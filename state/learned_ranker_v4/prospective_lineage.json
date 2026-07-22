@@ -7,28 +7,27 @@
   },
   "previous": {
     "fc3d": {
-      "stateSha256": "c798e00783ac873742239389c1767b1e29ef0e3c73c70c30452f1f39c3b7b28a",
-      "sourceFingerprint": "a7044d97c73a80b9759fdbc23aa020cc942996300e549e3f0d292f230d857276",
-      "startAfterIssue": "2026189",
+      "stateSha256": "b260861dde5e603e0ef2281e574547bae9a77d0396fd1a58bed9acaff5442946",
+      "sourceFingerprint": "0face967eeae078e408ef89fc0b8f5343654b09125eecad325555beca649a70e",
+      "startAfterIssue": "2026191",
       "observedPeriods": 0,
       "status": "superseded_before_valid_observation",
-      "reason": "源码指纹失配期间未生成有效前瞻预测；2026190和2026191随后进入重训历史"
+      "reason": "Search/Validation协议硬切换且不兼容旧状态；零有效观察后使用官方历史完整重训"
     },
     "pl3": {
-      "stateSha256": "189e12b5fae28ae857233e6c97f7740e6f0c5d2c1cd3b7905f273eae6dce6da4",
-      "sourceFingerprint": "a7044d97c73a80b9759fdbc23aa020cc942996300e549e3f0d292f230d857276",
-      "startAfterIssue": "26189",
+      "stateSha256": "064bb7d4cacf97e01f01edd347a5ca0a3b140f9be938b67a7599b82113ae9c95",
+      "sourceFingerprint": "0face967eeae078e408ef89fc0b8f5343654b09125eecad325555beca649a70e",
+      "startAfterIssue": "26191",
       "observedPeriods": 0,
       "status": "superseded_before_valid_observation",
-      "reason": "源码指纹失配期间未生成有效前瞻预测；26190和26191随后进入重训历史"
+      "reason": "Search/Validation协议硬切换且不兼容旧状态；零有效观察后使用官方历史完整重训"
     }
   },
   "active": {
     "fc3d": {
-      "stateSha256": "fe1a03dd4bc5351c0ea62edd2baab304f5cc1479e0256a87b2294bbcdae8a060",
-      "sourceFingerprint": "e075e72f053c054f942b8b8c26c2e72e9ce392e2b203bc590497e9516f6f7ad6",
-      "compatiblePredecessorStateSha256": "7f0db279fd5c771b14da8176faea2da580b4eadfd509e6d71836e757c6d89956",
-      "mathematicalStateEqualToCompatiblePredecessor": true,
+      "stateSha256": "de55638c49e9d7c2f5572fc829e198773aa821d07c218da16b6b56b26ed1902e",
+      "sourceFingerprint": "f286b8bd3e7d20c88ac1ca327fd7e9f3bc1d3be25e27ddd98a15466139e796e5",
+      "trainingMode": "full_retrain_from_official_history",
       "startAfterIssue": "2026191",
       "absorbedTrainingIssues": [
         "2026190",
@@ -40,10 +39,9 @@
       "status": "collecting"
     },
     "pl3": {
-      "stateSha256": "fcf8f71e4db049340d4b68d70b42ce1745b4bae18e3f38271d7efa0247bc9415",
-      "sourceFingerprint": "e075e72f053c054f942b8b8c26c2e72e9ce392e2b203bc590497e9516f6f7ad6",
-      "compatiblePredecessorStateSha256": "d38d43f65a9ce2071c9de168141ce50580b508ccdfe4459619a0b3552fff6e74",
-      "mathematicalStateEqualToCompatiblePredecessor": true,
+      "stateSha256": "579cd86cfe0ee2276e5548b6e5b234df3755837f49c6771aaa578fb2066765cb",
+      "sourceFingerprint": "f286b8bd3e7d20c88ac1ca327fd7e9f3bc1d3be25e27ddd98a15466139e796e5",
+      "trainingMode": "full_retrain_from_official_history",
       "startAfterIssue": "26191",
       "absorbedTrainingIssues": [
         "26190",
