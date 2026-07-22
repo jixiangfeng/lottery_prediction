@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""运行behavioral_context_v2标准化行为A/B/C挑战模型。"""
+"""运行behavioral_context_v4极简近期、同位重合与零豹子A/B/C挑战模型。"""
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.analysis.digit_behavioral_context import (  # noqa: E402
+    BEHAVIORAL_V4_FEATURE_NAMES,
     BehavioralContextConfig,
     run_behavioral_context_challenge,
     write_behavioral_context_report,
@@ -41,8 +43,8 @@ def main(argv: list[str] | None = None) -> int:
         "--behavior-features",
         nargs="+",
         choices=BEHAVIORAL_FEATURE_NAMES,
-        default=BEHAVIORAL_FEATURE_NAMES,
-        help="参与挑战的行为特征；默认使用全部六项",
+        default=BEHAVIORAL_V4_FEATURE_NAMES,
+        help="参与挑战的行为特征；默认使用v4两项极简特征，挑战组同时排除全部豹子",
     )
     args = parser.parse_args(argv)
     if len(set(args.behavior_features)) != len(args.behavior_features):
@@ -77,10 +79,27 @@ def main(argv: list[str] | None = None) -> int:
         f"developmentRows={len(history)} evaluationEnd={evaluation_end} "
         f"frozenExcluded={args.frozen_test_periods} "
         f"behaviorFeatures={','.join(args.behavior_features)} "
+        "baselineMaxTriples=1 challengerMaxTriples=0 "
         "dailyPolicy=true groups=A/B/C primary=C frozenTestRead=false "
         "currentDailyModelReplaced=false",
         flush=True,
     )
+    started = time.monotonic()
+
+    def show_progress(payload: dict[str, object]) -> None:
+        processed = int(payload["processedOuterPeriods"])
+        total = int(payload["totalOuterPeriods"])
+        elapsed = max(time.monotonic() - started, 1e-9)
+        remaining = (total - processed) * elapsed / max(processed, 1)
+        print(
+            "progress: "
+            f"lottery={args.lottery} processed={processed}/{total} "
+            f"blocks={payload['completedFixedBlocks']}/{payload['totalFixedBlocks']} "
+            f"targetIssue={payload['targetIssue']} elapsedSeconds={elapsed:.1f} "
+            f"etaSeconds={remaining:.1f}",
+            flush=True,
+        )
+
     report = run_behavioral_context_challenge(
         history,
         rule,
@@ -89,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
             behavioral_feature_names=tuple(args.behavior_features),
             paired_permutations=args.paired_permutations,
         ),
+        progress_callback=show_progress,
     )
     report["dataBoundary"] = {
         "fullPeriods": full_periods,

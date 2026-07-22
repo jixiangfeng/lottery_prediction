@@ -5,15 +5,16 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.analysis.digit_learned_features import (
-    BEHAVIORAL_FEATURE_NAMES,
-    FEATURE_NAMES,
-)
+from src.analysis import digit_online_gradient_variants as variants_module
+from src.analysis.digit_learned_features import BEHAVIORAL_FEATURE_NAMES, FEATURE_NAMES
 from src.analysis.digit_online_gradient import (
     OnlineGradientCandidate,
     OnlineGradientConfig,
     online_gradient_step,
     run_online_gradient_research,
+)
+from src.analysis.digit_online_gradient_variants import (
+    run_online_gradient_research_variants,
 )
 from src.lotteries import get_lottery_rule
 
@@ -162,6 +163,52 @@ def test_behavioral_features_use_configured_l2_without_changing_core_defaults():
     assert OnlineGradientConfig(development_end=600).feature_names == FEATURE_NAMES
 
 
+def test_behavioral_gradient_clip_does_not_reduce_core_gradient_budget():
+    core_matrix = np.zeros((1000, len(FEATURE_NAMES)), dtype=float)
+    core_index = FEATURE_NAMES.index("position_frequency")
+    core_matrix[321, core_index] = 10.0
+    candidate = OnlineGradientCandidate(learning_rate=0.1, uniform_shrinkage=1.0)
+    core_config = OnlineGradientConfig(
+        development_end=600,
+        zeroed_features=(),
+        l2_penalty=0.0,
+        gradient_clip=1.0,
+    )
+    core_step = online_gradient_step(
+        core_matrix,
+        321,
+        np.zeros(len(FEATURE_NAMES)),
+        candidate,
+        core_config,
+    )
+
+    feature_names = (*FEATURE_NAMES, BEHAVIORAL_FEATURE_NAMES[0])
+    mixed_matrix = np.zeros((1000, len(feature_names)), dtype=float)
+    mixed_matrix[:, : len(FEATURE_NAMES)] = core_matrix
+    mixed_matrix[321, -1] = 1000.0
+    mixed_config = OnlineGradientConfig(
+        development_end=600,
+        feature_names=feature_names,
+        feature_l2_multipliers=((BEHAVIORAL_FEATURE_NAMES[0], 2.0),),
+        zeroed_features=(),
+        l2_penalty=0.0,
+        gradient_clip=1.0,
+        behavioral_gradient_clip=0.25,
+    )
+    mixed_step = online_gradient_step(
+        mixed_matrix,
+        321,
+        np.zeros(len(feature_names)),
+        candidate,
+        mixed_config,
+    )
+
+    assert np.isclose(
+        mixed_step.weights_after[core_index], core_step.weights_after[core_index]
+    )
+    assert abs(mixed_step.clipped_gradient[-1]) <= 0.25
+
+
 def test_monotonic_behavior_constraints_block_positive_risk_weights():
     feature_names = (*FEATURE_NAMES, *BEHAVIORAL_FEATURE_NAMES)
     matrix = np.zeros((1000, len(feature_names)), dtype=float)
@@ -249,3 +296,57 @@ def test_online_gradient_can_evaluate_the_same_policy_used_by_daily_top50():
     assert all(item.candidate_policy_rank is None for item in report.periods)
     assert not any(item.research_direct_hit for item in report.periods)
     assert all(item.top50_shape_counts["豹子"] == 0 for item in report.periods)
+
+
+def test_variant_runner_builds_each_target_feature_matrix_once_and_reports_progress(
+    monkeypatch,
+):
+    base = OnlineGradientConfig(
+        development_end=120,
+        outer_periods=20,
+        calibration_interval=10,
+        search_lookback=30,
+        validation_lookback=20,
+        warmup_history=50,
+        learning_rates=(0.0, 0.005),
+        shrinkages=(0.0, 0.5),
+    )
+    behavior_names = (*FEATURE_NAMES, "exact_recency_risk")
+    behavior = OnlineGradientConfig(
+        **{
+            **base.__dict__,
+            "feature_names": behavior_names,
+            "behavioral_gradient_clip": 0.25,
+        }
+    )
+    monotonic = OnlineGradientConfig(
+        **{
+            **behavior.__dict__,
+            "nonpositive_features": ("exact_recency_risk",),
+        }
+    )
+    build_calls = 0
+    original = variants_module.build_candidate_features
+
+    def counted_build(*args, **kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(variants_module, "build_candidate_features", counted_build)
+    progress: list[dict[str, object]] = []
+
+    reports = run_online_gradient_research_variants(
+        _history(130),
+        get_lottery_rule("fc3d"),
+        {"A": base, "B": behavior, "C": monotonic},
+        progress_callback=progress.append,
+        progress_interval=10,
+    )
+
+    assert build_calls == 70
+    assert set(reports) == {"A", "B", "C"}
+    assert all(len(report.periods) == 20 for report in reports.values())
+    assert [item["processedOuterPeriods"] for item in progress] == [10, 20]
+    assert all(item["totalOuterPeriods"] == 20 for item in progress)
+    assert progress[-1]["completedFixedBlocks"] == 2

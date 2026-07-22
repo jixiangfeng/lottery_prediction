@@ -64,11 +64,13 @@ AI失败不会改变模型结果，命令会保留确定性说明，并在`ai.st
 .\.venv\Scripts\python.exe scripts\digit_predict_today.py --lottery fc3d --shadow-state state/learned_ranker_v4/full_history_shadow_fc3d_current.json --no-fetch
 ```
 
-行为挑战默认排除CSV最后500期Frozen。需要扫描开发区全部完整500期块时运行：
+行为v1～v4已完成全部固定块验证并封存，不再作为常规运维任务运行。统一证据总账使用：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\digit_behavioral_context.py --lottery fc3d --csv data/fc3d/official_history.csv --output reports/development/behavioral_context_v2_fc3d_all_blocks.json --all-development-blocks
+.\.venv\Scripts\python.exe scripts\digit_model_scoreboard.py --output-json reports/development/model_scoreboard_20260721.json --output-markdown docs/model_scoreboard.md
 ```
+
+总账必须保持`selectedModel=null`和`productionMode=uniform_abstain`，除非新的独立前瞻证据同时通过LogLoss、Brier、Top50和时间稳定性。
 
 ## 清理说明
 

@@ -175,9 +175,8 @@ def test_behavioral_context_features_have_comparable_per_query_scale():
     for name in BEHAVIORAL_FEATURE_NAMES:
         values = features[name].to_numpy(dtype=float)
         assert np.isclose(values.mean(), 0.0, atol=1e-12)
-        assert np.isclose(values.std(), 0.0, atol=1e-12) or np.isclose(
-            values.std(), 1.0, atol=1e-12
-        )
+        assert 0.0 <= values.std() <= 1.0 + 1e-12
+        assert np.max(np.abs(values)) <= 8.0
 
 
 def test_behavioral_context_does_not_read_target_outcome():

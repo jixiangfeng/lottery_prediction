@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""behavioral_context_v2：标准化行为风险的固定A/B/C挑战模型。"""
+"""behavioral_context_v4：近期、同位重合与零豹子的极简固定挑战模型。"""
 
 from __future__ import annotations
 
@@ -29,9 +29,17 @@ from src.analysis.digit_learned_features import (
 from src.analysis.digit_online_gradient import (
     OnlineGradientConfig,
     OnlineGradientReport,
-    run_online_gradient_research,
+)
+from src.analysis.digit_online_gradient_variants import (
+    ProgressCallback,
+    run_online_gradient_research_variants,
 )
 from src.lotteries.base import LotteryRule
+
+BEHAVIORAL_V4_FEATURE_NAMES = (
+    "exact_recency_risk",
+    "last_position_overlap_risk",
+)
 
 
 def behavioral_context_source_fingerprint() -> str:
@@ -42,6 +50,7 @@ def behavioral_context_source_fingerprint() -> str:
         directory / "digit_daily_policy.py",
         directory / "digit_learned_features.py",
         directory / "digit_online_gradient.py",
+        directory / "digit_online_gradient_variants.py",
         directory / "digit_behavioral_context.py",
     )
     digest = hashlib.sha256()
@@ -55,15 +64,17 @@ def behavioral_context_source_fingerprint() -> str:
 class BehavioralContextConfig:
     online: OnlineGradientConfig
     feature_config: LearnedFeatureConfig = LearnedFeatureConfig()
-    behavioral_feature_names: tuple[str, ...] = BEHAVIORAL_FEATURE_NAMES
+    behavioral_feature_names: tuple[str, ...] = BEHAVIORAL_V4_FEATURE_NAMES
     behavioral_l2_multiplier: float = 2.0
+    behavioral_gradient_clip: float = 0.25
+    baseline_maximum_top50_triples: int = 1
+    challenger_maximum_top50_triples: int = 0
     paired_block_size: int = 10
     paired_permutations: int = 9999
     random_seed: int = 20260721
     minimum_periods: int = 500
     paired_p_threshold: float = 0.01
     minimum_random_lift: float = 1.25
-    maximum_top50_triples: int = 1
     maximum_shape_total_variation: float = 0.10
     fixed_block_size: int = 500
 
@@ -79,11 +90,19 @@ class BehavioralContextConfig:
             raise ValueError("行为特征子集包含未知特征")
         if self.behavioral_l2_multiplier <= 0:
             raise ValueError("行为特征L2倍率必须为正")
+        if self.behavioral_gradient_clip <= 0:
+            raise ValueError("行为特征梯度裁剪阈值必须为正")
         if self.paired_block_size <= 0 or self.paired_permutations <= 0:
             raise ValueError("配对块和置换次数必须为正")
         if self.minimum_periods <= 0 or not 0 < self.paired_p_threshold < 1:
             raise ValueError("验收样本和p值门槛无效")
-        if self.minimum_random_lift <= 1 or self.maximum_top50_triples < 0:
+        if self.minimum_random_lift <= 1 or any(
+            value < 0
+            for value in (
+                self.baseline_maximum_top50_triples,
+                self.challenger_maximum_top50_triples,
+            )
+        ):
             raise ValueError("提升和形态门槛无效")
         if not 0 <= self.maximum_shape_total_variation <= 1:
             raise ValueError("形态总变差门槛必须位于0到1")
@@ -310,49 +329,48 @@ def run_behavioral_context_challenge(
     history: pd.DataFrame,
     rule: LotteryRule,
     config: BehavioralContextConfig,
+    *,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, object]:
     """运行A核心、B自由行为和预注册C单调行为三个固定组。"""
-    base = replace(
+    baseline = replace(
         config.online,
         feature_names=FEATURE_NAMES,
         daily_candidate_policy=True,
-        maximum_top50_triples=config.maximum_top50_triples,
+        maximum_top50_triples=config.baseline_maximum_top50_triples,
+        behavioral_gradient_clip=None,
     )
     selected_behavior_names = config.behavioral_feature_names
     behavior_names = (*FEATURE_NAMES, *selected_behavior_names)
-    behavior_multipliers = tuple(base.feature_l2_multipliers) + tuple(
+    behavior_multipliers = tuple(baseline.feature_l2_multipliers) + tuple(
         (name, config.behavioral_l2_multiplier) for name in selected_behavior_names
     )
+    challenger = replace(
+        baseline,
+        maximum_top50_triples=config.challenger_maximum_top50_triples,
+    )
     unconstrained = replace(
-        base,
+        challenger,
         feature_names=behavior_names,
         feature_l2_multipliers=behavior_multipliers,
+        behavioral_gradient_clip=config.behavioral_gradient_clip,
     )
     monotonic = replace(
         unconstrained,
         nonpositive_features=selected_behavior_names,
     )
-    report_a = run_online_gradient_research(
+    reports = run_online_gradient_research_variants(
         history,
         rule,
-        base,
+        {"A": baseline, "B": unconstrained, "C": monotonic},
         config.feature_config,
         frozen_test_read=False,
+        progress_callback=progress_callback,
+        progress_interval=min(config.fixed_block_size, config.online.outer_periods),
     )
-    report_b = run_online_gradient_research(
-        history,
-        rule,
-        unconstrained,
-        config.feature_config,
-        frozen_test_read=False,
-    )
-    report_c = run_online_gradient_research(
-        history,
-        rule,
-        monotonic,
-        config.feature_config,
-        frozen_test_read=False,
-    )
+    report_a = reports["A"]
+    report_b = reports["B"]
+    report_c = reports["C"]
     target_issues = tuple(item.target_issue for item in report_a.periods)
     if any(
         tuple(item.target_issue for item in report.periods) != target_issues
@@ -362,25 +380,25 @@ def run_behavioral_context_challenge(
 
     summary_a = _summary(
         report_a,
-        maximum_top50_triples=config.maximum_top50_triples,
+        maximum_top50_triples=config.baseline_maximum_top50_triples,
         maximum_shape_total_variation=config.maximum_shape_total_variation,
         fixed_block_size=config.fixed_block_size,
     )
     summary_b = _summary(
         report_b,
-        maximum_top50_triples=config.maximum_top50_triples,
+        maximum_top50_triples=config.challenger_maximum_top50_triples,
         maximum_shape_total_variation=config.maximum_shape_total_variation,
         fixed_block_size=config.fixed_block_size,
     )
     summary_c = _summary(
         report_c,
-        maximum_top50_triples=config.maximum_top50_triples,
+        maximum_top50_triples=config.challenger_maximum_top50_triples,
         maximum_shape_total_variation=config.maximum_shape_total_variation,
         fixed_block_size=config.fixed_block_size,
     )
-    summary_a["variant"] = "core_v4"
-    summary_b["variant"] = "standardized_unconstrained_behavior"
-    summary_c["variant"] = "standardized_monotonic_behavior"
+    summary_a["variant"] = "core_v4_current_policy"
+    summary_b["variant"] = "minimal_v4_unconstrained_zero_triples"
+    summary_c["variant"] = "minimal_v4_monotonic_zero_triples"
     comparison_b = _paired_comparison(report_a, report_b, config, seed_offset=0)
     comparison_c = _paired_comparison(report_a, report_c, config, seed_offset=10)
     first_eligible_index = (
@@ -444,7 +462,7 @@ def run_behavioral_context_challenge(
         normalize_digit_dataframe(history, rule), ascending=True
     ).iloc[: config.online.development_end]
     return {
-        "modelVersion": "behavioral_context_v2",
+        "modelVersion": "behavioral_context_v4",
         "evaluationKind": "development_fixed_abc_behavioral_challenge",
         "evidenceStatus": "exploratory_reused_development",
         "lottery": rule.code,
@@ -457,18 +475,26 @@ def run_behavioral_context_challenge(
             name: BEHAVIORAL_FEATURE_SEMANTICS[name] for name in selected_behavior_names
         },
         "behavioralFeatureProfile": (
-            "all" if selected_behavior_names == BEHAVIORAL_FEATURE_NAMES else "subset"
+            "minimal_v4"
+            if selected_behavior_names == BEHAVIORAL_V4_FEATURE_NAMES
+            else (
+                "all"
+                if selected_behavior_names == BEHAVIORAL_FEATURE_NAMES
+                else "subset"
+            )
         ),
         "behavioralFeatureInitialWeight": 0.0,
         "behavioralFeatureL2Multiplier": config.behavioral_l2_multiplier,
-        "behavioralFeatureNormalization": "per_query_standard_z",
+        "behavioralGradientClip": config.behavioral_gradient_clip,
+        "behavioralFeatureNormalization": "per_query_centered_bounded_z",
         "behavioralRiskHalfLifePeriods": BEHAVIORAL_RISK_HALF_LIFE,
         "primaryChallengerGroup": "C",
         "winnerSelectionAllowed": False,
         "candidatePolicy": {
             "excludeLatestExact": True,
             "topK": config.online.direct_top_k,
-            "maximumTop50Triples": config.maximum_top50_triples,
+            "baselineMaximumTop50Triples": config.baseline_maximum_top50_triples,
+            "challengerMaximumTop50Triples": config.challenger_maximum_top50_triples,
         },
         "developmentCoverage": {
             "availableOuterPeriods": available_outer_periods,
@@ -485,7 +511,6 @@ def run_behavioral_context_challenge(
             "A": summary_a,
             "B": summary_b,
             "C": summary_c,
-            "D": {"status": "trial_data_unavailable"},
         },
         "comparisons": {
             "BvsA": comparison_b,
@@ -499,7 +524,7 @@ def run_behavioral_context_challenge(
             "minimumRandomLift": config.minimum_random_lift,
             "requiredTimeBlocks": 3,
             "fixedBlockSize": config.fixed_block_size,
-            "maximumTop50Triples": config.maximum_top50_triples,
+            "maximumTop50Triples": config.challenger_maximum_top50_triples,
             "maximumShapeTotalVariation": config.maximum_shape_total_variation,
             "reasons": gate_reasons,
             "newShadowStateAllowed": not gate_reasons,
@@ -525,6 +550,7 @@ def write_behavioral_context_report(
 
 
 __all__ = [
+    "BEHAVIORAL_V4_FEATURE_NAMES",
     "BehavioralContextConfig",
     "behavioral_context_source_fingerprint",
     "run_behavioral_context_challenge",

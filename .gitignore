@@ -160,6 +160,7 @@ data/**/*.bak-*
 !state/learned_ranker_v4/frozen_pl3_once.marker.json
 !state/learned_ranker_v4/full_history_shadow_fc3d.json
 !state/learned_ranker_v4/full_history_shadow_pl3.json
+!state/learned_ranker_v4/prospective_lineage.json
 models/
 cache/
 temp/

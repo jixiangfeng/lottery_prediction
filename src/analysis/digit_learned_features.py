@@ -405,17 +405,18 @@ def _robust_z(values: np.ndarray) -> np.ndarray:
 
 
 def _standard_z(values: np.ndarray) -> np.ndarray:
-    """标准化稀疏或离散行为特征，避免MAD为零时整列失效。"""
+    """中心化行为特征并限制最终幅度，避免稀疏列被二次放大。"""
 
     mean = float(np.mean(values))
     scale = float(np.std(values))
     if scale <= 1e-12:
         return np.zeros_like(values)
     clipped = np.clip((values - mean) / scale, -8.0, 8.0)
-    clipped_scale = float(np.std(clipped))
-    if clipped_scale <= 1e-12:
+    centered = clipped - float(np.mean(clipped))
+    maximum = float(np.max(np.abs(centered)))
+    if maximum <= 1e-12:
         return np.zeros_like(values)
-    return (clipped - float(np.mean(clipped))) / clipped_scale
+    return centered / max(1.0, maximum / 8.0)
 
 
 def _weighted_window_arrays(

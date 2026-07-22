@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -93,3 +94,53 @@ def test_full_history_shadow_trains_every_available_target_and_locks_future_queu
         validate_locked_shadow_state(stored, expected_lottery="fc3d")
     with pytest.raises(RuntimeError, match="已存在"):
         write_locked_shadow_state(result, destination)
+
+
+@pytest.mark.parametrize("lottery", ("fc3d", "pl3"))
+def test_versioned_default_shadow_state_matches_current_source(lottery: str):
+    """仓库默认日常入口附带的状态必须能通过当前源码完整性校验。"""
+
+    project_root = Path(__file__).resolve().parents[1]
+    state_path = (
+        project_root
+        / "state"
+        / "learned_ranker_v4"
+        / f"full_history_shadow_{lottery}.json"
+    )
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert validate_locked_shadow_state(payload, expected_lottery=lottery) == payload
+
+
+@pytest.mark.parametrize("lottery", ("fc3d", "pl3"))
+def test_prospective_lineage_matches_active_versioned_state(lottery: str):
+    """前瞻序列重启必须显式留痕，且活动序列必须指向仓库默认状态。"""
+
+    project_root = Path(__file__).resolve().parents[1]
+    lineage = json.loads(
+        (
+            project_root / "state" / "learned_ranker_v4" / "prospective_lineage.json"
+        ).read_text(encoding="utf-8")
+    )
+    state = json.loads(
+        (
+            project_root
+            / "state"
+            / "learned_ranker_v4"
+            / f"full_history_shadow_{lottery}.json"
+        ).read_text(encoding="utf-8")
+    )
+    previous = lineage["previous"][lottery]
+    active = lineage["active"][lottery]
+
+    assert previous["status"] == "superseded_before_valid_observation"
+    assert previous["observedPeriods"] == 0
+    assert active["stateSha256"] == state["stateSha256"]
+    assert (
+        active["startAfterIssue"] == state["prospectiveValidation"]["startAfterIssue"]
+    )
+    assert (
+        active["observedPeriods"] == state["prospectiveValidation"]["observedPeriods"]
+    )
+    assert active["requiredPeriods"] == 500
+    assert active["absorbedTrainingIssues"]

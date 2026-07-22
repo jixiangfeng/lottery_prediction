@@ -8,7 +8,6 @@ from src.analysis.digit_behavioral_context import (
     BehavioralContextConfig,
     run_behavioral_context_challenge,
 )
-from src.analysis.digit_learned_features import BEHAVIORAL_FEATURE_NAMES
 from src.analysis.digit_online_gradient import OnlineGradientConfig
 from src.lotteries import get_lottery_rule
 
@@ -41,34 +40,30 @@ def test_behavioral_context_challenge_runs_paired_prior_only_groups():
         get_lottery_rule("fc3d"),
         BehavioralContextConfig(
             online=online,
-            behavioral_feature_names=(
-                "exact_recency_risk",
-                "shape_run_excess_risk",
-            ),
             paired_permutations=99,
-            maximum_top50_triples=0,
         ),
     )
 
-    assert report["modelVersion"] == "behavioral_context_v2"
+    assert report["modelVersion"] == "behavioral_context_v4"
     assert len(report["dataSha256"]) == 64
     assert len(report["sourceFingerprint"]) == 64
     assert report["frozenTestRead"] is False
     assert report["groups"]["A"]["periods"] == 30
     assert report["groups"]["B"]["periods"] == 30
     assert report["groups"]["C"]["periods"] == 30
-    assert report["groups"]["D"]["status"] == "trial_data_unavailable"
+    assert set(report["groups"]) == {"A", "B", "C"}
     assert report["comparison"]["pairedPeriods"] == 30
     assert report["comparison"] == report["comparisons"]["CvsA"]
     assert report["comparisons"]["BvsA"]["pairedPeriods"] == 30
     assert 0 <= report["comparison"]["pairedTop50PValue"] <= 1
     assert report["behavioralFeatureL2Multiplier"] == 2.0
-    assert report["behavioralFeatureProfile"] == "subset"
+    assert report["behavioralGradientClip"] == 0.25
+    assert report["behavioralFeatureProfile"] == "minimal_v4"
     assert report["behavioralFeatures"] == [
         "exact_recency_risk",
-        "shape_run_excess_risk",
+        "last_position_overlap_risk",
     ]
-    assert report["behavioralFeatureNormalization"] == "per_query_standard_z"
+    assert report["behavioralFeatureNormalization"] == "per_query_centered_bounded_z"
     assert set(report["behavioralFeatureSemantics"]) == set(
         report["behavioralFeatures"]
     )
@@ -77,9 +72,12 @@ def test_behavioral_context_challenge_runs_paired_prior_only_groups():
     assert report["candidatePolicy"] == {
         "excludeLatestExact": True,
         "topK": 50,
-        "maximumTop50Triples": 0,
+        "baselineMaximumTop50Triples": 1,
+        "challengerMaximumTop50Triples": 0,
     }
     assert report["groups"]["A"]["dailyCandidatePolicyApplied"] is True
+    assert report["groups"]["A"]["maximumTop50TriplesAllowed"] == 1
+    assert report["groups"]["B"]["maximumTop50TriplesAllowed"] == 0
     assert report["groups"]["B"]["maximumTop50Triples"] == 0
     assert report["groups"]["C"]["allFixedBlocksAtOrAboveRandom"] is False
     assert 0 <= report["groups"]["C"]["shapeDistributionTotalVariation"] <= 1
@@ -108,13 +106,16 @@ def test_behavioral_context_challenge_runs_paired_prior_only_groups():
     assert "行为特征Top50边界贡献为负或跨块不稳定" in report["gate"]["reasons"]
 
 
-def test_behavioral_context_config_defaults_to_all_features_and_rejects_invalid_subset():
+def test_behavioral_context_config_defaults_to_minimal_v4_package_and_rejects_invalid_subset():
     online = OnlineGradientConfig(development_end=600)
 
-    assert (
-        BehavioralContextConfig(online=online).behavioral_feature_names
-        == BEHAVIORAL_FEATURE_NAMES
+    config = BehavioralContextConfig(online=online)
+    assert config.behavioral_feature_names == (
+        "exact_recency_risk",
+        "last_position_overlap_risk",
     )
+    assert config.baseline_maximum_top50_triples == 1
+    assert config.challenger_maximum_top50_triples == 0
     with pytest.raises(ValueError, match="必须非空"):
         BehavioralContextConfig(online=online, behavioral_feature_names=())
     with pytest.raises(ValueError, match="未知特征"):
@@ -135,12 +136,13 @@ def test_behavioral_cli_excludes_frozen_and_can_scan_complete_development_blocks
         lambda *args, **kwargs: (_history(1200), 1700),
     )
 
-    def fake_run(history, rule, config):
+    def fake_run(history, rule, config, *, progress_callback=None):
         captured["historyPeriods"] = len(history)
         captured["lottery"] = rule.code
         captured["outerPeriods"] = config.online.outer_periods
         captured["developmentEnd"] = config.online.development_end
         captured["behavioralFeatures"] = config.behavioral_feature_names
+        captured["progressCallback"] = callable(progress_callback)
         return {}
 
     def fake_write(report, path):
@@ -174,6 +176,7 @@ def test_behavioral_cli_excludes_frozen_and_can_scan_complete_development_blocks
         "exact_recency_risk",
         "shape_run_excess_risk",
     )
+    assert captured["progressCallback"] is True
     assert captured["report"] == {
         "dataBoundary": {
             "fullPeriods": 1700,

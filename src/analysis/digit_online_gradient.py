@@ -24,10 +24,7 @@ from src.analysis.digit_learned_features import (
     build_candidate_features,
     iter_rolling_history_states,
 )
-from src.analysis.digit_learned_ranker import (
-    DEFAULT_WEIGHTS,
-    rank_candidate_indices,
-)
+from src.analysis.digit_learned_ranker import DEFAULT_WEIGHTS, rank_candidate_indices
 from src.analysis.digit_statistics import classify_digit_shape
 from src.lotteries.base import LotteryRule
 
@@ -58,6 +55,7 @@ class OnlineGradientConfig:
     temperature: float = 1.0
     l2_penalty: float = 0.001
     gradient_clip: float = 1.0
+    behavioral_gradient_clip: float | None = None
     weight_limit: float = 1.5
     direct_top_k: int = 50
     daily_candidate_policy: bool = False
@@ -84,6 +82,11 @@ class OnlineGradientConfig:
             raise ValueError("shrinkages至少包含一个λ>0模型候选")
         if self.temperature <= 0 or self.gradient_clip <= 0 or self.weight_limit <= 0:
             raise ValueError("temperature、gradient_clip和weight_limit必须为正")
+        if (
+            self.behavioral_gradient_clip is not None
+            and self.behavioral_gradient_clip <= 0
+        ):
+            raise ValueError("behavioral_gradient_clip必须为正或None")
         if self.l2_penalty < 0:
             raise ValueError("l2_penalty不得为负")
         if not 1 <= self.direct_top_k <= 1000:
@@ -288,6 +291,7 @@ class OnlineGradientReport:
                 "temperature": self.config.temperature,
                 "l2Penalty": self.config.l2_penalty,
                 "gradientClip": self.config.gradient_clip,
+                "behavioralGradientClip": self.config.behavioral_gradient_clip,
                 "weightLimit": self.config.weight_limit,
                 "directTopK": self.config.direct_top_k,
                 "dailyCandidatePolicy": self.config.daily_candidate_policy,
@@ -376,6 +380,31 @@ def _initial_weights(config: OnlineGradientConfig) -> np.ndarray:
     return weights
 
 
+def _clip_gradient(gradient: np.ndarray, config: OnlineGradientConfig) -> np.ndarray:
+    """裁剪梯度；行为挑战器可隔离核心与行为两组的梯度预算。"""
+
+    if config.behavioral_gradient_clip is None:
+        norm = float(np.linalg.norm(gradient))
+        return gradient * min(1.0, config.gradient_clip / max(norm, 1e-15))
+
+    behavioral_names = set(BEHAVIORAL_FEATURE_NAMES)
+    behavioral_mask = np.asarray(
+        [name in behavioral_names for name in config.feature_names], dtype=bool
+    )
+    core_mask = ~behavioral_mask
+    clipped = np.zeros_like(gradient)
+    for mask, limit in (
+        (core_mask, config.gradient_clip),
+        (behavioral_mask, config.behavioral_gradient_clip),
+    ):
+        if not np.any(mask):
+            continue
+        group = gradient[mask]
+        norm = float(np.linalg.norm(group))
+        clipped[mask] = group * min(1.0, limit / max(norm, 1e-15))
+    return clipped
+
+
 def online_gradient_step(
     feature_matrix: np.ndarray,
     actual_index: int,
@@ -403,8 +432,7 @@ def online_gradient_step(
     )
     expected_features = model @ matrix
     gradient = factor * (expected_features - matrix[actual_index]) / config.temperature
-    norm = float(np.linalg.norm(gradient))
-    clipped = gradient * min(1.0, config.gradient_clip / max(norm, 1e-15))
+    clipped = _clip_gradient(gradient, config)
     regularization = _regularization_multipliers(config)
     updated = weights - candidate.learning_rate * (
         clipped + config.l2_penalty * regularization * weights
