@@ -66,4 +66,6 @@ def test_frozen_report_marks_independent_evidence_and_gate():
     assert report["evidenceStatus"] == "independent_frozen_test"
     assert report["evaluationKind"] == "frozen_sparse_online_gradient"
     assert report["frozenGate"] is not None
-    assert report["metrics"]["researchTop50PValue"] >= 0
+    metrics = report["metrics"]
+    assert metrics["researchTop50PValue"] is None
+    assert "Frozen没有可评估的非均匀Top50排名" in report["frozenGate"]["reasons"]

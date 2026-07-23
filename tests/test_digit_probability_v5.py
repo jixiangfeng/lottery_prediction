@@ -17,6 +17,7 @@ from src.analysis.digit_probability_v5 import (
     load_and_verify_probability_v5_protocol,
     probability_v5_smoke_config,
     run_probability_v5_development,
+    run_registered_probability_v5_development,
     write_probability_v5_protocol,
     write_probability_v5_report,
 )
@@ -91,12 +92,12 @@ def test_prequential_prediction_is_prior_only_and_calibration_ignores_evaluation
     first_payload = first.to_dict()
     second_payload = second.to_dict()
     assert (
-        first_payload["periods"][0]["distributionFingerprint"]
-        == second_payload["periods"][0]["distributionFingerprint"]
+        first_payload["periods"][0]["rawDistributionFingerprint"]
+        == second_payload["periods"][0]["rawDistributionFingerprint"]
     )
     assert (
-        first_payload["periods"][1]["distributionFingerprint"]
-        != second_payload["periods"][1]["distributionFingerprint"]
+        first_payload["periods"][1]["rawDistributionFingerprint"]
+        != second_payload["periods"][1]["rawDistributionFingerprint"]
     )
     assert first.selected_temperature == second.selected_temperature
     assert first.calibration == second.calibration
@@ -161,29 +162,30 @@ def test_protocol_is_deterministic_immutable_and_bound_to_current_inputs(
     history = _history(60)
     rule = get_lottery_rule("fc3d")
     config = _config()
+    locked = probability_v5.prepare_probability_v5_development_history(
+        history, rule, config
+    )
     protocol = build_probability_v5_protocol(
-        history, rule, config, frozen_periods_excluded=500
+        locked, rule, config, frozen_periods_excluded=500
     )
     path = tmp_path / "protocol.json"
 
     assert write_probability_v5_protocol(protocol, path) == path
     assert write_probability_v5_protocol(protocol, path) == path
-    assert (
-        load_and_verify_probability_v5_protocol(
-            path,
-            history,
-            rule,
-            config,
-            frozen_periods_excluded=500,
-        )
-        == protocol
+    verified = load_and_verify_probability_v5_protocol(
+        path,
+        locked,
+        rule,
+        config,
+        frozen_periods_excluded=500,
     )
+    assert verified == protocol
     assert protocol["developmentData"]["periods"] == 50
     assert protocol["developmentData"]["firstIssue"] == str(2026011)
 
     older_change = history.copy()
     older_change.loc[0, "百位"] = (int(older_change.loc[0, "百位"]) + 1) % 10
-    assert (
+    with pytest.raises(ValueError, match="DataFrame期数"):
         load_and_verify_probability_v5_protocol(
             path,
             older_change,
@@ -191,10 +193,8 @@ def test_protocol_is_deterministic_immutable_and_bound_to_current_inputs(
             config,
             frozen_periods_excluded=500,
         )
-        == protocol
-    )
 
-    changed = history.copy()
+    changed = locked.copy()
     changed.loc[10, "百位"] = (int(changed.loc[10, "百位"]) + 1) % 10
     with pytest.raises(RuntimeError, match="不一致"):
         load_and_verify_probability_v5_protocol(
@@ -208,12 +208,19 @@ def test_protocol_is_deterministic_immutable_and_bound_to_current_inputs(
 
 def test_development_report_is_immutable_and_records_protocol(tmp_path: Path):
     history = _history(50)
-    report = run_probability_v5_development(
+    rule = get_lottery_rule("fc3d")
+    config = _config()
+    protocol = build_probability_v5_protocol(
+        history, rule, config, frozen_periods_excluded=500
+    )
+    protocol_path = tmp_path / "protocol.json"
+    write_probability_v5_protocol(protocol, protocol_path)
+    report = run_registered_probability_v5_development(
+        protocol_path,
         history,
-        get_lottery_rule("fc3d"),
-        _config(),
+        rule,
+        config,
         frozen_periods_excluded=500,
-        development_protocol_sha256="protocol-test",
     )
     path = tmp_path / "development.json"
 
@@ -221,16 +228,17 @@ def test_development_report_is_immutable_and_records_protocol(tmp_path: Path):
     assert write_probability_v5_report(report, path) == path
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["protocol"]["developmentProtocolRegistered"] is True
-    assert payload["protocol"]["developmentProtocolSha256"] == "protocol-test"
+    assert (
+        payload["protocol"]["developmentProtocolSha256"] == protocol["protocolSha256"]
+    )
 
     changed_history = history.copy()
     changed_history.loc[40, "个位"] = (int(changed_history.loc[40, "个位"]) + 1) % 10
     changed_report = run_probability_v5_development(
         changed_history,
-        get_lottery_rule("fc3d"),
-        _config(),
+        rule,
+        config,
         frozen_periods_excluded=500,
-        development_protocol_sha256="protocol-test",
     )
     with pytest.raises(FileExistsError, match="禁止覆盖"):
         write_probability_v5_report(changed_report, path)

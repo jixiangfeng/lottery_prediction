@@ -14,6 +14,20 @@
 - v5随机模拟必须完整重放四专家、在线聚合、Calibration和联合闸门；正式模式固定5000次并绑定协议与开发报告，少量smoke永远不能晋级。
 - v5随机模拟种子由基础种子和试验编号确定，串行与多进程结果必须逐试验一致；正式运行前仍需完成全长度性能验证。
 - v5正式随机模拟必须使用逐试验不可覆盖检查点；恢复运行时协议、参考报告、配置或种子身份不一致必须拒绝。
+- `kl8_pick5_v1`与数字型模型完全隔离，固定处理80个号码、每期20个正例和五张选5票；首张票仅作审计，当前只允许开发挑战器证据。
+- 快乐8开发协议固定Warmup 300、Search 500、Calibration 250、Evaluation 500，并绑定加载器实际返回的Frozen `firstIssue/lastIssue`与排除期数；Frozen号码字段不得解析。通用开发入口没有协议身份参数，也不得声明协议已登记。
+- 快乐8首版六专家固定为Uniform 0.25、EWMA半衰期20/80/300、强收缩遗漏和轻量pairwise边际修正；PairwiseAdjustedExpert只使用事前EWMA80 Top20上下文，按`pair/(marginal_i*marginal_j)-1`计算裁剪lift、排除self取均值，并以`exp(pair_marginal_weight*adjustment)`轻量修正EWMA80；不增加专家或搜索窗口。
+- 快乐8预注册数值固定为`epsilon=1e-6`、遗漏收缩`0.9`、遗漏尺度`80`、pair半衰期`80`、pair边际权重`0.05`、组合pair权重`0.02`、集中惩罚`0.05`、Top池`20`和输出组合`5`。
+- 快乐8Calibration只从`[0.75,1,1.25,1.5,2,3]`选择logit temperature；Search不回溯应用Calibration结果，Evaluation使用Calibration结束时一次选定的温度且不再选择。
+- 快乐8Hedge使用固定学习率`0.05`和单期专家损失上限`10`；每期必须记录开奖前/更新后的六专家权重。
+- 快乐8统计闸门使用单侧`alpha=0.05`、固定种子`20260722`连续块bootstrap，完整配置至少2000次；边际闸门要求两项Delta均非负、五块均非负且两项`pValueMeanNonPositive<=alpha`，业务闸门要求完整五票投资组合精确`p<=alpha`、每票平均命中不低于1.25、投资组合平均总命中不低于6.25，且五个时间顺序块的每票均值均不低于1.25。
+- 快乐8匹配成本精确检验按每期80个号码在五票中的重数`0..5`分组，用动态规划精确抽取20个号码，得到该期总命中PMF并跨期卷积；因此组合重叠被直接计入。票级分布、投资组合总命中/最佳票分布及最佳票`>=3`、`>=4`、`=5`比例用于报告和null经验比较，不套用单票显著性结论。
+- 快乐8研究候选代表在消费全部锁定开发历史、完成最终专家权重与pair状态更新后，对下一期尚未观察开奖的预测；不得复用最后一个Evaluation期的事前组合，且正式用户候选始终为空。
+- 快乐8正式路径只接受逐字段等于默认值的唯一规范`Kl8Pick5Config()`，并要求`frozen_periods_excluded=config.frozen_periods=500`、`stability_blocks=5`、Top池20、输出5票和`required_null_iterations>=5000`；缩短配置只能用于未登记开发/null smoke。
+- 快乐8正式null绝对下限由字面常量`FORMAL_MIN_ITERATIONS=5000`保证，实际要求为`max(5000, required_null_iterations)`，并绑定只读协议、只读开发报告、锁定开发DataFrame和精确Frozen边界；只有联合闸门经验假阳性率及七项Evaluation观测统计（Delta LogLoss、Delta Brier、每票平均命中、投资组合平均总命中、最佳票`>=3`、`>=4`、`=5`比例）经验p值均不高于`alpha`时，`nullSimulationPassed`才可为true。smoke可缩短分段/重采样/迭代但永远是`smoke_only`。性能优化只能使用语义等价的预计算/向量化并要求固定seed的完整`trialSha256`不变；当前10核机器正式建议8 worker，4/8 worker实测折算约4.09/3.70小时。
+- 快乐8官方抓取最终响应URL必须保持`https`且主机在固定白名单；`periods>=0`、`timeout>0`、`retries>=0`。请求正期数必须恰好返回该数量，请求0必须恰好返回接口宣告总数。JSONL保持只追加语义，并在macOS/Linux使用`fcntl.flock`独占锁、末尾换行完整性检查、`flush+fsync`后解锁；规范CSV发布前设为`0444`并完成文件/目录`fsync`，相同内容但可写的既有目标也拒绝。
+- 快乐8温度选择只消费Calibration开奖；Evaluation开奖不得影响已选温度或Evaluation首期事前概率。Calibration开奖允许改变温度和后续状态，但Search记录必须保持逐字段不变。
+- 快乐8在正式5000次null、全新独立Validation 500期和未开启Frozen前，`promotionPassed`、`recommendationEnabled`固定为false，正式候选固定为空。
 - Search 用于参数探索，Validation只确认Search选定配置但具有硬否决权；Search或Validation未通过时只写审计报告，不写参数文件，也禁止进入Frozen Test。
 - Frozen Test 不得用于特征、窗口、权重、温度、候选预算、目标 profile 或 gate 调整。
 - 全历史只作为弱长期先验，近期窗口默认具有更高权重。
@@ -57,3 +71,15 @@
 - 彩票结果高度随机；历史评估不保证未来命中、中奖或盈利。
 - 行为A/B的Top50必须复用日常组合策略；概率损失仍按未过滤的1000候选事前分布计算。行为开发默认排除已消费的最后500期Frozen；未覆盖开发区全部完整500期块、存在放弃期或任一固定块不稳定时禁止晋级。
 - 锁定影子状态只允许由源码指纹和内容指纹完全匹配的代码继续增量；源码指纹统一LF行尾，不提供旧状态兼容迁移，任何源码变化都必须完整重训到新路径。
+
+## 2026-07-22 probability_v5 review clean-break 假设
+
+- 本次仅修复开发区`probability_v5`及相关审计链，不运行正式5000次null，不读取或重新评估任何Frozen数据。
+- 已登记开发与正式null的来源证明只接受不可覆盖、无写权限的协议/报告文件路径；公共入口内部加载文件，并用锁定开发DataFrame、当前源码和配置完整确定性重算。任何内存对象、`build_probability_v5_protocol()`返回值或私有构造器都不构成来源证明，不保留旧对象接口兼容层。
+- “Search+Evaluation joint gate”解释为开发信号必须同时满足两个窗口各自的`strictStatisticalGatePassed`；Calibration只负责预注册temperature选择，不单独构成晋级闸门。
+- “checkpoint set hash”解释为按试验编号排序后的`trialSha256`列表哈希，同时写入null报告和检查点`trial_set.json`；部分检查点不伪造完成集合。
+- 正式null的预注册次数固定为恰好5000，配置值大于或小于5000均视为协议错误；smoke必须少于5000。
+- 进程池在构造、提交或结果阶段失败时，smoke与正式模式均失败关闭，不回退线程池，避免文档承诺与实际故障边界不一致。
+- 稀疏Frozen已经消费且禁止重跑；没有非均匀排名时`researchTop50PValue`允许为`None`，Frozen闸门原因必须明确说明“没有可评估的非均匀Top50排名”，不改写全部锁定总账p-value。
+- 快乐8 v2仅做隔离探索：完整CSV的最新500期固定为Frozen，核心模块只接受已由两遍加载器隔离的1514期开发DataFrame；`dataSha256`只覆盖开发区语义数据，避免读取Frozen号码。官网全量2014期上的五个嵌套特征组和十三个独立消融组均失败，`frequency80`的局部Top20改善不得覆盖LogLoss/Brier及稳定性失败；当前固定为`uniform/no-signal`，不得继续在同一Search历史调窗口、树参数或温度。
+- v2固定使用`300 initial train + 714 Search + 500 Evaluation`和每50期扩展重训；Evaluation不得参与特征选择，任何结果都不能触发晋级或用户可见推荐。

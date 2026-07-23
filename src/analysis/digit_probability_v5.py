@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -125,8 +126,8 @@ class ProbabilityV5DevelopmentConfig:
             raise ValueError("maximum_top50_triples不得为负")
         if self.bootstrap_block_size <= 0 or self.bootstrap_resamples <= 0:
             raise ValueError("bootstrap参数必须为正")
-        if self.required_null_simulations < 5000:
-            raise ValueError("required_null_simulations不得少于5000")
+        if self.required_null_simulations != 5000:
+            raise ValueError("required_null_simulations必须等于5000")
         if self.random_seed < 0:
             raise ValueError("random_seed不得为负")
 
@@ -263,12 +264,32 @@ class _PrequentialRecord:
     actual_text: str
     probabilities: np.ndarray
     expert_weights: tuple[float, ...]
+    expert_weights_after: tuple[float, ...]
     expert_actual_probabilities: tuple[float, ...]
     raw_top_k: tuple[str, ...]
     policy_top_k: tuple[str, ...]
     raw_top_k_hit: bool
     policy_top_k_hit: bool
-    distribution_fingerprint: str
+    raw_distribution_fingerprint: str
+
+
+def _protocol_identity(payload: Mapping[str, object]) -> dict[str, object]:
+    development_data = payload.get("developmentData")
+    frozen_boundary = payload.get("frozenBoundary")
+    if not isinstance(development_data, Mapping) or not isinstance(
+        frozen_boundary, Mapping
+    ):
+        raise ValueError("probability_v5开发协议身份字段无效")
+    identity: dict[str, object] = {
+        "protocolSha256": payload["protocolSha256"],
+        "lottery": payload["lottery"],
+        "dataSha256": development_data["dataSha256"],
+        "sourceFingerprint": payload["sourceFingerprint"],
+        "configSha256": payload["configSha256"],
+        "frozenPeriodsExcluded": frozen_boundary["periodsExcluded"],
+    }
+    identity["identitySha256"] = _payload_sha256(identity)
+    return identity
 
 
 @dataclass(frozen=True)
@@ -280,7 +301,7 @@ class ProbabilityV5DevelopmentReport:
     data_sha256: str
     source_fingerprint: str
     config: ProbabilityV5DevelopmentConfig
-    development_protocol_sha256: str | None
+    protocol_identity: dict[str, object] | None
     selected_temperature: float
     search: dict[str, object]
     calibration: dict[str, object]
@@ -288,9 +309,10 @@ class ProbabilityV5DevelopmentReport:
     periods: tuple[dict[str, object], ...]
 
     def to_dict(self) -> dict[str, object]:
-        development_signals_passed = bool(
-            self.evaluation.get("strictStatisticalGatePassed", False)
-        )
+        search_passed = self.search.get("strictStatisticalGatePassed") is True
+        evaluation_passed = self.evaluation.get("strictStatisticalGatePassed") is True
+        development_signals_passed = search_passed and evaluation_passed
+        protocol_identity = self.protocol_identity
         promotion_reasons = []
         if not development_signals_passed:
             promotion_reasons.append("开发区严格统计闸门未通过")
@@ -300,7 +322,7 @@ class ProbabilityV5DevelopmentReport:
                 "新的独立500期Validation尚未打开",
             ]
         )
-        return {
+        payload: dict[str, object] = {
             "schemaVersion": "probability_v5_development_v1",
             "modelVersion": "probability_v5",
             "evaluationKind": "development_prequential_challenger",
@@ -310,14 +332,17 @@ class ProbabilityV5DevelopmentReport:
             "sourceFingerprint": self.source_fingerprint,
             "configSha256": _payload_sha256(self.config.to_dict()),
             "config": self.config.to_dict(),
+            "protocolIdentity": protocol_identity,
             "protocol": {
                 "predictThenUpdate": True,
                 "frozenRead": False,
                 "frozenPeriodsExcluded": self.frozen_periods_excluded,
-                "developmentProtocolRegistered": (
-                    self.development_protocol_sha256 is not None
+                "developmentProtocolRegistered": (protocol_identity is not None),
+                "developmentProtocolSha256": (
+                    protocol_identity["protocolSha256"]
+                    if protocol_identity is not None
+                    else None
                 ),
-                "developmentProtocolSha256": self.development_protocol_sha256,
                 "rawProbabilityMetricsSeparatedFromPolicyTopK": True,
                 "uniformMechanism": "permanent_expert_only",
                 "secondaryUniformShrinkageEnabled": False,
@@ -330,6 +355,11 @@ class ProbabilityV5DevelopmentReport:
             "search": self.search,
             "calibration": self.calibration,
             "evaluation": self.evaluation,
+            "derivedGates": {
+                "searchPassed": search_passed,
+                "evaluationPassed": evaluation_passed,
+                "searchAndEvaluationPassed": development_signals_passed,
+            },
             "fullPipelineNullSimulation": {
                 "status": "not_run",
                 "requiredIterations": self.config.required_null_simulations,
@@ -344,6 +374,8 @@ class ProbabilityV5DevelopmentReport:
             "formalRecommendation": None,
             "periods": list(self.periods),
         }
+        payload["reportSha256"] = _payload_sha256(payload)
+        return payload
 
 
 def _normalize_probability(values: np.ndarray) -> np.ndarray:
@@ -365,10 +397,12 @@ def _payload_sha256(payload: object) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-@lru_cache(maxsize=1)
-def _source_fingerprint() -> str:
+def _source_fingerprint_paths() -> tuple[Path, ...]:
+    """返回影响v5证据身份的全部源码与CLI路径。"""
+
     directory = Path(__file__).resolve().parent
-    paths = (
+    root = directory.parents[1]
+    return (
         Path(__file__),
         directory / "digit_probability_v5_null.py",
         directory / "digit_data.py",
@@ -377,10 +411,17 @@ def _source_fingerprint() -> str:
         directory / "digit_learned_ranker.py",
         directory / "digit_online_gradient.py",
         directory / "prediction_viability.py",
+        root / "scripts" / "digit_probability_v5.py",
+        root / "scripts" / "digit_probability_v5_null.py",
     )
+
+
+@lru_cache(maxsize=1)
+def _source_fingerprint() -> str:
     digest = hashlib.sha256()
-    for path in paths:
-        digest.update(path.name.encode("utf-8"))
+    root = Path(__file__).resolve().parents[2]
+    for path in _source_fingerprint_paths():
+        digest.update(str(path.relative_to(root)).encode("utf-8"))
         digest.update(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
     return digest.hexdigest()
 
@@ -398,9 +439,7 @@ def build_probability_v5_protocol(
         raise ValueError("probability_v5只支持fc3d/pl3")
     if frozen_periods_excluded < 500:
         raise ValueError("probability_v5开发协议必须排除至少500期Frozen")
-    chronological = prepare_probability_v5_development_history(
-        history, rule, config
-    )
+    chronological = prepare_probability_v5_development_history(history, rule, config)
     config_payload = config.to_dict()
     payload: dict[str, object] = {
         "schemaVersion": "probability_v5_development_protocol_v1",
@@ -448,21 +487,48 @@ def _write_immutable_content(path: Path, content: str, *, label: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = content.encode("utf-8")
     if path.exists():
-        if path.read_bytes() == encoded:
+        if path.read_bytes() == encoded and path.stat().st_mode & 0o222 == 0:
             return path
+        if path.read_bytes() == encoded:
+            raise PermissionError(f"{label}必须保持只读：{path}")
         raise FileExistsError(f"{label}已存在不同内容，禁止覆盖：{path}")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
     try:
-        descriptor = os.open(path, flags, 0o444)
-    except FileExistsError:
-        if path.read_bytes() == encoded:
-            return path
-        raise FileExistsError(f"{label}已存在不同内容，禁止覆盖：{path}") from None
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(encoded)
-        stream.flush()
-        os.fsync(stream.fileno())
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o444)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.read_bytes() != encoded:
+                raise FileExistsError(
+                    f"{label}已存在不同内容，禁止覆盖：{path}"
+                ) from None
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
+
+
+def _load_readonly_json(path: str | Path, label: str) -> dict[str, object]:
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError(f"{label}必须是普通只读文件：{source}")
+    if source.stat().st_mode & 0o222:
+        raise PermissionError(f"{label}必须是只读文件：{source}")
+    loaded = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{label}格式无效")
+    return loaded
 
 
 def write_probability_v5_protocol(
@@ -489,10 +555,12 @@ def load_and_verify_probability_v5_protocol(
 ) -> dict[str, object]:
     """加载协议并与当前源码、配置、开发数据和Frozen边界逐字段核对。"""
 
-    source = Path(path)
-    loaded = json.loads(source.read_text(encoding="utf-8"))
-    if not isinstance(loaded, dict):
-        raise ValueError("probability_v5开发协议格式无效")
+    loaded = _load_readonly_json(path, "probability_v5开发协议")
+    development_data = loaded.get("developmentData")
+    if not isinstance(development_data, Mapping):
+        raise ValueError("probability_v5开发协议developmentData格式无效")
+    if len(history) != development_data.get("periods"):
+        raise ValueError("锁定开发DataFrame期数与probability_v5开发协议不一致")
     expected = build_probability_v5_protocol(
         history,
         rule,
@@ -501,7 +569,7 @@ def load_and_verify_probability_v5_protocol(
     )
     if loaded != expected:
         raise RuntimeError("probability_v5开发协议与当前源码、配置或数据不一致")
-    return expected
+    return json.loads(json.dumps(expected, ensure_ascii=False))
 
 
 def _adaptive_expert_weights(
@@ -598,6 +666,9 @@ def _evaluation_payload(
         log_losses.append(log_loss)
         brier_scores.append(brier)
         if include_period_details:
+            calibrated_fingerprint = hashlib.sha256(
+                probabilities.astype("<f8").tobytes()
+            ).hexdigest()
             period_payloads.append(
                 {
                     "targetIndex": record.target_index,
@@ -613,10 +684,14 @@ def _evaluation_payload(
                     "rawTopK": list(record.raw_top_k),
                     "policyTopK": list(record.policy_top_k),
                     "expertWeights": dict(zip(_EXPERT_NAMES, record.expert_weights)),
+                    "expertWeightsAfter": dict(
+                        zip(_EXPERT_NAMES, record.expert_weights_after)
+                    ),
                     "expertActualProbabilities": dict(
                         zip(_EXPERT_NAMES, record.expert_actual_probabilities)
                     ),
-                    "distributionFingerprint": record.distribution_fingerprint,
+                    "rawDistributionFingerprint": (record.raw_distribution_fingerprint),
+                    "calibratedDistributionFingerprint": calibrated_fingerprint,
                 }
             )
     viability = evaluate_viability_metric(
@@ -753,14 +828,30 @@ def _run_prequential(
             [probabilities[actual_index] for probabilities in expert_probabilities],
             dtype=float,
         )
+        losses = -np.log(np.maximum(expert_actual, 1e-300))
+        next_cumulative_excess_losses = (
+            cumulative_excess_losses + losses - _UNIFORM_LOG_LOSS
+        )
+        next_cumulative_loss_range_squared = cumulative_loss_range_squared + float(
+            (losses.max() - losses.min()) ** 2
+        )
+        expert_weights_after, _ = _adaptive_expert_weights(
+            next_cumulative_excess_losses,
+            initial_weights,
+            next_cumulative_loss_range_squared,
+            config.maximum_hedge_learning_rate,
+        )
         records.append(
             _PrequentialRecord(
                 target_index=target_index,
                 target_issue=str(chronological.iloc[target_index]["期数"]),
                 actual_index=actual_index,
                 actual_text=actual_text,
-                probabilities=mixture.astype(np.float32),
+                probabilities=mixture.astype(np.float64, copy=True),
                 expert_weights=tuple(float(value) for value in expert_weights),
+                expert_weights_after=tuple(
+                    float(value) for value in expert_weights_after
+                ),
                 expert_actual_probabilities=tuple(
                     float(value) for value in expert_actual
                 ),
@@ -770,14 +861,13 @@ def _run_prequential(
                 policy_top_k=policy_top if include_candidate_lists else (),
                 raw_top_k_hit=actual_text in ranked[: config.top_k],
                 policy_top_k_hit=actual_text in policy_top,
-                distribution_fingerprint=hashlib.sha256(
+                raw_distribution_fingerprint=hashlib.sha256(
                     mixture.astype("<f8").tobytes()
                 ).hexdigest(),
             )
         )
-        losses = -np.log(np.maximum(expert_actual, 1e-300))
-        cumulative_excess_losses += losses - _UNIFORM_LOG_LOSS
-        cumulative_loss_range_squared += float((losses.max() - losses.min()) ** 2)
+        cumulative_excess_losses = next_cumulative_excess_losses
+        cumulative_loss_range_squared = next_cumulative_loss_range_squared
         legacy_weights = legacy_step.weights_after
         ewma.update(actual_digits)
         if progress_callback is not None and (
@@ -789,13 +879,13 @@ def _run_prequential(
     return tuple(records)
 
 
-def run_probability_v5_development(
+def _run_probability_v5_development(
     history: pd.DataFrame,
     rule: LotteryRule,
     config: ProbabilityV5DevelopmentConfig = ProbabilityV5DevelopmentConfig(),
     *,
     frozen_periods_excluded: int,
-    development_protocol_sha256: str | None = None,
+    protocol_payload: Mapping[str, object] | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
     include_period_details: bool = True,
 ) -> ProbabilityV5DevelopmentReport:
@@ -805,9 +895,16 @@ def run_probability_v5_development(
         raise ValueError("probability_v5只支持fc3d/pl3")
     if frozen_periods_excluded < 500:
         raise ValueError("probability_v5开发报告必须排除至少500期Frozen")
-    chronological = prepare_probability_v5_development_history(
-        history, rule, config
-    )
+    chronological = prepare_probability_v5_development_history(history, rule, config)
+    if protocol_payload is not None:
+        expected_protocol = build_probability_v5_protocol(
+            chronological,
+            rule,
+            config,
+            frozen_periods_excluded=frozen_periods_excluded,
+        )
+        if dict(protocol_payload) != expected_protocol:
+            raise RuntimeError("已验证probability_v5协议与当前核心输入身份不一致")
     records = _run_prequential(
         chronological,
         rule,
@@ -843,7 +940,6 @@ def run_probability_v5_development(
         config,
         include_period_details=include_period_details,
     )
-    final_weights = records[-1].expert_weights
     search_metrics, search_period_details = _evaluation_payload(
         search_records,
         1.0,
@@ -862,8 +958,43 @@ def run_probability_v5_development(
         "selectionMetricOrder": ["meanLogLoss", "meanBrier", "temperature"],
         "candidates": calibration_candidates,
         "selected": selected,
+        "periodAudit": list(
+            _evaluation_payload(
+                calibration_records,
+                temperature,
+                config,
+                include_period_details=include_period_details,
+            )[1]
+        ),
     }
-    evaluation["finalExpertWeights"] = dict(zip(_EXPERT_NAMES, final_weights))
+    last_prediction_weights = records[-1].expert_weights
+    post_final_update_weights = records[-1].expert_weights_after
+    evaluation["lastPredictionExpertWeights"] = dict(
+        zip(_EXPERT_NAMES, last_prediction_weights)
+    )
+    evaluation["postFinalUpdateExpertWeights"] = dict(
+        zip(_EXPERT_NAMES, post_final_update_weights)
+    )
+    evaluation["expertWeightDistribution"] = {
+        name: {
+            "mean": float(np.mean(values)),
+            "std": float(np.std(values)),
+            "minimum": float(np.min(values)),
+            "q25": float(np.quantile(values, 0.25)),
+            "median": float(np.quantile(values, 0.5)),
+            "q75": float(np.quantile(values, 0.75)),
+            "maximum": float(np.max(values)),
+        }
+        for name, values in (
+            (
+                expert_name,
+                np.asarray(
+                    [record.expert_weights[index] for record in evaluation_records]
+                ),
+            )
+            for index, expert_name in enumerate(_EXPERT_NAMES)
+        )
+    }
     evaluation["meanUniformExpertWeight"] = float(
         np.mean([record.expert_weights[0] for record in evaluation_records])
     )
@@ -873,13 +1004,98 @@ def run_probability_v5_development(
         data_sha256=canonical_digit_data_sha256(chronological, rule),
         source_fingerprint=_source_fingerprint(),
         config=config,
-        development_protocol_sha256=development_protocol_sha256,
+        protocol_identity=(
+            _protocol_identity(protocol_payload)
+            if protocol_payload is not None
+            else None
+        ),
         selected_temperature=temperature,
         search=search,
         calibration=calibration,
         evaluation=evaluation,
         periods=periods,
     )
+
+
+def run_probability_v5_development(
+    history: pd.DataFrame,
+    rule: LotteryRule,
+    config: ProbabilityV5DevelopmentConfig = ProbabilityV5DevelopmentConfig(),
+    *,
+    frozen_periods_excluded: int,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    include_period_details: bool = True,
+) -> ProbabilityV5DevelopmentReport:
+    """运行通用开发/smoke评估；该入口永远不声明协议已登记。"""
+
+    return _run_probability_v5_development(
+        history,
+        rule,
+        config,
+        frozen_periods_excluded=frozen_periods_excluded,
+        protocol_payload=None,
+        progress_callback=progress_callback,
+        include_period_details=include_period_details,
+    )
+
+
+def run_registered_probability_v5_development(
+    protocol_path: str | Path,
+    history: pd.DataFrame,
+    rule: LotteryRule,
+    config: ProbabilityV5DevelopmentConfig = ProbabilityV5DevelopmentConfig(),
+    *,
+    frozen_periods_excluded: int,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    include_period_details: bool = True,
+) -> ProbabilityV5DevelopmentReport:
+    """从只读协议文件加载、完整重算并运行已登记开发评估。"""
+
+    protocol = load_and_verify_probability_v5_protocol(
+        protocol_path,
+        history,
+        rule,
+        config,
+        frozen_periods_excluded=frozen_periods_excluded,
+    )
+    return _run_probability_v5_development(
+        history,
+        rule,
+        config,
+        frozen_periods_excluded=frozen_periods_excluded,
+        protocol_payload=protocol,
+        progress_callback=progress_callback,
+        include_period_details=include_period_details,
+    )
+
+
+def load_and_verify_probability_v5_report(
+    path: str | Path,
+    protocol_path: str | Path,
+    history: pd.DataFrame,
+    rule: LotteryRule,
+    config: ProbabilityV5DevelopmentConfig,
+    *,
+    frozen_periods_excluded: int,
+) -> dict[str, object]:
+    """从锁定输入完整重算报告，拒绝只重写自哈希的伪造指标。"""
+
+    loaded = _load_readonly_json(path, "probability_v5开发报告")
+    claimed = loaded.get("reportSha256")
+    unsigned = {key: value for key, value in loaded.items() if key != "reportSha256"}
+    if claimed != _payload_sha256(unsigned):
+        raise ValueError("probability_v5开发报告reportSha256无效")
+    expected = run_registered_probability_v5_development(
+        protocol_path,
+        history,
+        rule,
+        config,
+        frozen_periods_excluded=frozen_periods_excluded,
+        include_period_details=True,
+    ).to_dict()
+    if loaded != expected:
+        raise RuntimeError("probability_v5开发报告与锁定输入重新计算结果不一致")
+    return json.loads(json.dumps(expected, ensure_ascii=False))
 
 
 def write_probability_v5_report(
@@ -898,10 +1114,12 @@ __all__ = [
     "ProbabilityV5DevelopmentConfig",
     "ProbabilityV5DevelopmentReport",
     "build_probability_v5_protocol",
+    "load_and_verify_probability_v5_report",
     "load_and_verify_probability_v5_protocol",
     "prepare_probability_v5_development_history",
     "probability_v5_smoke_config",
     "run_probability_v5_development",
+    "run_registered_probability_v5_development",
     "write_probability_v5_report",
     "write_probability_v5_protocol",
 ]

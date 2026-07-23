@@ -28,6 +28,7 @@ from src.analysis.digit_learned_features import (
 )
 from src.analysis.digit_online_gradient import (
     OnlineGradientConfig,
+    OnlineGradientPeriod,
     OnlineGradientReport,
 )
 from src.analysis.digit_online_gradient_variants import (
@@ -40,6 +41,24 @@ BEHAVIORAL_V4_FEATURE_NAMES = (
     "exact_recency_risk",
     "last_position_overlap_risk",
 )
+
+
+def _required_research_hit(period: OnlineGradientPeriod) -> bool:
+    if period.research_direct_hit is None:
+        raise ValueError("行为挑战缺少逐期Top50命中审计")
+    return period.research_direct_hit
+
+
+def _required_shape_counts(period: OnlineGradientPeriod) -> dict[str, int]:
+    if period.top50_shape_counts is None:
+        raise ValueError("行为挑战缺少逐期Top50形态审计")
+    return period.top50_shape_counts
+
+
+def _required_research_rank(period: OnlineGradientPeriod) -> int:
+    if period.research_rank is None:
+        raise ValueError("行为挑战缺少逐期原始排名审计")
+    return period.research_rank
 
 
 def behavioral_context_source_fingerprint() -> str:
@@ -141,18 +160,18 @@ def _summary(
     fixed_block_size: int,
 ) -> dict[str, object]:
     periods = report.periods
-    hits = sum(item.research_direct_hit for item in periods)
+    hits = sum(_required_research_hit(item) for item in periods)
     hit_rate = hits / len(periods)
     time_blocks = tuple(
-        float(np.mean([item.research_direct_hit for item in block]))
+        float(np.mean([_required_research_hit(item) for item in block]))
         for block in np.array_split(np.asarray(periods, dtype=object), 3)
         if len(block)
     )
     shape_means = {
-        name: float(np.mean([item.top50_shape_counts[name] for item in periods]))
+        name: float(np.mean([_required_shape_counts(item)[name] for item in periods]))
         for name in ("组六", "组三", "豹子")
     }
-    max_triples = max(item.top50_shape_counts["豹子"] for item in periods)
+    max_triples = max(_required_shape_counts(item)["豹子"] for item in periods)
     shape_total_variation = 0.5 * sum(
         abs(shape_means[name] / report.config.direct_top_k - SHAPE_PRIORS[name])
         for name in ("组六", "组三", "豹子")
@@ -193,7 +212,7 @@ def _summary(
         float(
             np.mean(
                 [
-                    item.research_direct_hit
+                    _required_research_hit(item)
                     for item in periods[start : start + fixed_block_size]
                 ]
             )
@@ -273,11 +292,11 @@ def _paired_comparison(
     )
     period_pairs = tuple(zip(baseline.periods, challenger.periods))
     top50_gained = sum(
-        not left.research_direct_hit and right.research_direct_hit
+        not _required_research_hit(left) and _required_research_hit(right)
         for left, right in period_pairs
     )
     top50_lost = sum(
-        left.research_direct_hit and not right.research_direct_hit
+        _required_research_hit(left) and not _required_research_hit(right)
         for left, right in period_pairs
     )
     discordant_periods = top50_gained + top50_lost
@@ -310,7 +329,7 @@ def _paired_comparison(
         "meanRawRankImprovement": float(
             np.mean(
                 [
-                    left.research_rank - right.research_rank
+                    _required_research_rank(left) - _required_research_rank(right)
                     for left, right in period_pairs
                 ]
             )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
 
@@ -34,36 +35,50 @@ def _history(periods: int) -> pd.DataFrame:
     )
 
 
-def _reference(protocol_sha256: str | None = None) -> tuple[dict[str, object], object]:
+def _reference() -> tuple[dict[str, object], object]:
     config = probability_v5_smoke_config()
     report = run_probability_v5_development(
         _history(50),
         get_lottery_rule("fc3d"),
         config,
         frozen_periods_excluded=500,
-        development_protocol_sha256=protocol_sha256,
         include_period_details=False,
     )
     return report.to_dict(), config
 
 
-def test_serial_and_parallel_full_pipeline_null_trials_are_identical(tmp_path: Path):
-    reference, config = _reference("protocol-test")
+def test_serial_full_pipeline_null_is_deterministic_and_process_failure_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    reference, config = _reference()
     common = {
         "lottery": "fc3d",
         "config": config,
         "history_periods": 50,
         "frozen_periods_excluded": 500,
         "iterations": 2,
-        "formal": False,
-        "protocol_sha256": None,
     }
 
     serial = run_probability_v5_null_simulation(reference, workers=1, **common)
     parallel = run_probability_v5_null_simulation(reference, workers=2, **common)
+    assert parallel.trials == serial.trials
 
-    assert serial.trials == parallel.trials
-    assert serial.summary == parallel.summary
+    class FailedExecutor:
+        def __init__(self, max_workers: int):
+            self.max_workers = max_workers
+
+        def submit(self, function, task):
+            future: Future[object] = Future()
+            future.set_exception(PermissionError("worker unavailable"))
+            return future
+
+        def shutdown(self, wait: bool, cancel_futures: bool):
+            assert cancel_futures is True
+
+    monkeypatch.setattr(null_module, "ProcessPoolExecutor", FailedExecutor)
+    with pytest.raises(RuntimeError, match="关闭失败"):
+        run_probability_v5_null_simulation(reference, workers=2, **common)
+
     assert serial.summary["nullSimulationPassed"] is False
     assert serial.to_dict()["execution"]["fullPipelineReplayed"] is True
     assert serial.to_dict()["promotionPassed"] is False
@@ -73,36 +88,6 @@ def test_serial_and_parallel_full_pipeline_null_trials_are_identical(tmp_path: P
     assert write_probability_v5_null_report(serial, path) == path
     with pytest.raises(FileExistsError, match="禁止覆盖"):
         write_probability_v5_null_report(replace(serial, workers=99), path)
-
-
-def test_formal_null_simulation_rejects_incomplete_or_unregistered_execution():
-    reference, config = _reference("protocol-test")
-
-    with pytest.raises(ValueError, match="必须执行5000次"):
-        run_probability_v5_null_simulation(
-            reference,
-            lottery="fc3d",
-            config=config,
-            history_periods=50,
-            frozen_periods_excluded=500,
-            iterations=1,
-            formal=True,
-            protocol_sha256="protocol-test",
-        )
-
-    unregistered, _ = _reference()
-    with pytest.raises(ValueError, match="未登记开发协议"):
-        run_probability_v5_null_simulation(
-            unregistered,
-            lottery="fc3d",
-            config=config,
-            history_periods=50,
-            frozen_periods_excluded=500,
-            iterations=5000,
-            formal=True,
-            protocol_sha256="protocol-test",
-            checkpoint_dir="unused-checkpoint",
-        )
 
 
 def test_checkpoint_resumes_without_recomputing_completed_trials(
@@ -117,7 +102,6 @@ def test_checkpoint_resumes_without_recomputing_completed_trials(
         "frozen_periods_excluded": 500,
         "iterations": 2,
         "workers": 1,
-        "formal": False,
         "checkpoint_dir": checkpoint,
     }
     first = run_probability_v5_null_simulation(reference, **common)
@@ -135,6 +119,13 @@ def test_checkpoint_resumes_without_recomputing_completed_trials(
 
     changed_reference = dict(reference)
     changed_reference["checkpointIdentityProbe"] = True
+    changed_reference["reportSha256"] = null_module._payload_sha256(
+        {
+            key: value
+            for key, value in changed_reference.items()
+            if key != "reportSha256"
+        }
+    )
     with pytest.raises(FileExistsError, match="检查点.*禁止覆盖"):
         run_probability_v5_null_simulation(changed_reference, **common)
 

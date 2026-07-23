@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from src.lotteries.base import BallSpec, LotteryRule, validate_numbers
 from src.lotteries.fc3d import FC3D_RULE
+from src.lotteries.kl8 import KL8_RULE
 from src.lotteries.pl3 import PL3_RULE
 from src.lotteries.pl5 import PL5_RULE
 
@@ -12,6 +13,7 @@ LOTTERY_RULES: dict[str, LotteryRule] = {
     rule.code: rule
     for rule in (
         FC3D_RULE,
+        KL8_RULE,
         PL3_RULE,
         PL5_RULE,
     )

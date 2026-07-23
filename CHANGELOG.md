@@ -4,6 +4,38 @@
 
 ### Added
 
+- 新增快乐8选4安全预测入口：Pick4独立精确超几何命中基线、严格4个唯一1—80号码校验、Frozen放毒隔离回归、默认空正式候选，以及显式`uniform_random_test_only`可复现娱乐组合；不复用Pick5门槛，不宣称模型信号。新增一次性低复杂度LambdaRank挑战器和五注零重叠组合评估；独立审查后显式锁定Top4截断、二元label gain、固定概率收缩、块bootstrap与四项Holm联合gate。修正版点估计略高于随机但显著性和跨块稳定性失败，按停止规则关闭。
+- 新增快乐8隔离探索性特征发现v2：prior-only号码面板、五个嵌套特征集、十三组独立消融、确定性LightGBM扩展回测、仅Search选择和一次性开发Evaluation；福彩官网年度窗口全量取得2014期，隔离500期Frozen后用1514期开发数据运行，所有组均未通过并退回`uniform/no-signal`。报告明确保持Frozen未读、不可晋级且无用户候选。
+- 新增快乐8玩法注册、20号唯一号码数据校验、时间正序语义哈希和不解析Frozen号码的两遍CSV加载器。
+- 新增`kl8_pick5_v1`六专家严格预序挑战器、固定温度Calibration、Top20内五组合生成、超几何精确检验与Search/Evaluation联合闸门。
+- 新增快乐8官方白名单抓取、开发登记、null模拟和安全今日预测CLI，以及Makefile一键入口。
+- 新增只读协议/报告确定性重算、临时文件+fsync+硬链接+目录fsync不可覆盖写入、逐试验检查点和有序试验集哈希。
+- 新增快乐8契约/null测试与`docs/kl8_pick5_acceptance.md`验收矩阵。
+
+### Fixed
+
+- 快乐8null性能优化保持统计语义不变：Top20组合池预计算`15504×20` incidence并增量累计重叠惩罚，连续块bootstrap按旧RNG顺序向量化，概率归一化仅在浮点二分已停滞时提前退出；固定seed完整`trialSha256`与优化前一致。单trial由`35.37秒`降至约`9.10秒`，8 worker真实checkpoint吞吐折算5000次约`3.70小时`。
+- 快乐8正式配置改为唯一规范默认值：全面拒绝非有限/越界参数，固定Top池20、输出5票、五块、Frozen 500和null至少5000；协议构建/加载、登记开发、报告回读、正式null及非smoke CLI均在IO或模拟前执行逐字段校验。
+- 快乐8命中证据从首票改为完整五票匹配成本投资组合：逐期记录五票命中/总命中/最佳命中，业务闸门使用每票均值1.25、组合总均值6.25、五块稳定性和按号码重数动态规划并跨期卷积的精确右尾；null同步重放五票策略并改为七项观测经验p值。
+- 快乐8检查点和抓取进一步失败关闭：JSON哈希/不可变写入禁止NaN/Inf，试验只接受精确字段及合理数值范围，恢复字段改名为`newCompletionOrder`；抓取必须恰好满足请求/接口宣告期数，规范CSV发布为`0444`并完成文件与目录`fsync`，相同内容但可写目标也拒绝。
+- 移除快乐8源码指纹的`lru_cache`，正式校验每次都重新读取六个执行文件。
+- 修复快乐8 PairwiseAdjustedExpert 在固定20-of-80下退化为EWMA80仿射变换的问题，改为事前Top20上下文上的平滑pair lift指数修正；新增关联身份和集中惩罚回归。
+- 快乐8正式null绝对下限改为字面常量5000并在公共入口、内部模拟与CLI加载前统一执行；最终五票口径要求七项Evaluation观测经验p值及联合FPR全部达标。
+- 加固快乐8官方抓取：最终响应强制HTTPS白名单、参数范围校验、分页无进展失败关闭，以及macOS/Linux `fcntl.flock`保护的完整JSONL只追加写入。
+- 新增Calibration/Evaluation因果边界回归：Evaluation不得改变已选温度或首期事前概率，Calibration可改变温度但不得改写Search记录。
+- `probability_v5`开发信号改为Search与Evaluation严格闸门联合通过，禁止仅凭Evaluation晋级开发信号。
+- 已登记开发与正式null改为只接受只读协议/报告文件路径和锁定开发DataFrame，入口内部加载并完整确定性重算；删除可伪造的`Verified*._create/token`对象链和旧兼容入口。
+- null试验严格闸门改为Search与Evaluation联合通过；正式身份同时绑定协议Frozen边界、报告边界及`developmentData.periods`，检查点/报告的`referenceReportSha256`精确使用开发报告声明的`reportSha256`。
+- raw概率保持`float64`，原始分布指纹直接哈希Calibration与指标实际消费的同一数组；多进程在构造、提交或结果失败时统一失败关闭，不再声明线程池降级。
+- 恢复旧模型总账到`HEAD`语义；没有非均匀Frozen排名时p-value可为空，闸门原因明确解释，不全局重写锁定p-value。
+- 开发报告新增`reportSha256`、raw/calibrated双分布指纹、Calibration逐期审计、最后预测/最终更新后专家权重及专家权重分布摘要。
+- v5源码指纹纳入两条CLI；不可变写入改为同目录临时文件、文件`fsync`、原子硬链接发布和目录`fsync`，避免崩溃留下半文件。
+- null试验新增`trialSha256`与有序检查点集合哈希；多进程改用`as_completed`即时检查点，恢复只补算缺失试验；正式次数固定且只能为5000。
+- 保持稀疏Frozen既有证据语义：没有非均匀排名时Top50 p-value可为`None`，Frozen闸门原因明确说明不可评估；不全局改写锁定总账p-value。
+- 修复`digit_behavioral_context.py`对可空命中、排名和形态审计字段的mypy错误，缺失时在模块边界明确失败。
+
+### Added
+
 - 新增隔离的`probability_v5`开发挑战器：四个预注册专家、自适应指数权重、独立temperature校准、raw/日常策略Top50双口径和联合统计闸门；入口不读取v4状态或Frozen，只写永久不可晋级的开发报告。
 - 新增`digit-probability-v5-development`和`--smoke`执行链；smoke只使用Frozen之前50期验证代码，不生成模型状态、研究排名或正式推荐。
 - 新增v5不可覆盖开发协议：完整开发前锁定数据、源码、配置、Frozen边界和执行计划；开发报告改为相同内容幂等、不同内容拒绝覆盖。

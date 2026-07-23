@@ -9,10 +9,11 @@ from src.lotteries.base import BallSpec, LotteryRule, validate_numbers
 def test_registry_contains_primary_lotteries():
     rules = {rule.code: rule for rule in list_lottery_rules()}
 
-    assert set(rules) == {"fc3d", "pl3", "pl5"}
+    assert set(rules) == {"fc3d", "pl3", "pl5", "kl8"}
     assert rules["fc3d"].display_name == "福彩3D"
     assert rules["pl3"].display_name == "排列三"
     assert rules["pl5"].display_name == "排列五"
+    assert rules["kl8"].display_name == "快乐8"
 
 
 def test_digit_lotteries_use_position_columns_and_allow_repeated_digits():

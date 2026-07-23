@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -16,12 +15,12 @@ if str(ROOT) not in sys.path:
 from src.analysis.digit_data import load_digit_development_csv  # noqa: E402
 from src.analysis.digit_probability_v5 import (  # noqa: E402
     ProbabilityV5DevelopmentConfig,
-    load_and_verify_probability_v5_protocol,
     prepare_probability_v5_development_history,
     probability_v5_smoke_config,
     run_probability_v5_development,
 )
 from src.analysis.digit_probability_v5_null import (  # noqa: E402
+    run_formal_probability_v5_null_simulation,
     run_probability_v5_null_simulation,
     write_probability_v5_null_report,
 )
@@ -72,7 +71,6 @@ def main(argv: list[str] | None = None) -> int:
             include_period_details=False,
         ).to_dict()
         iterations = args.iterations if args.iterations is not None else 2
-        protocol_sha256 = None
         formal = False
     else:
         if not args.protocol or not args.reference_report:
@@ -83,20 +81,6 @@ def main(argv: list[str] | None = None) -> int:
         development = prepare_probability_v5_development_history(
             development, rule, config
         )
-        protocol = load_and_verify_probability_v5_protocol(
-            args.protocol,
-            development,
-            rule,
-            config,
-            frozen_periods_excluded=args.frozen_test_periods,
-        )
-        protocol_sha256 = str(protocol["protocolSha256"])
-        raw_reference = json.loads(
-            Path(args.reference_report).read_text(encoding="utf-8")
-        )
-        if not isinstance(raw_reference, dict):
-            raise ValueError("开发报告格式无效")
-        reference = raw_reference
         iterations = (
             args.iterations
             if args.iterations is not None
@@ -111,23 +95,36 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
     progress_step = max(1, iterations // 20)
-    report = run_probability_v5_null_simulation(
-        reference,
-        lottery=args.lottery,
-        config=config,
-        history_periods=len(development),
-        frozen_periods_excluded=args.frozen_test_periods,
-        iterations=iterations,
-        workers=args.workers,
-        formal=formal,
-        protocol_sha256=protocol_sha256,
-        checkpoint_dir=args.checkpoint_dir,
-        progress_callback=lambda processed, total: (
+
+    def progress(processed: int, total: int) -> None:
+        if processed % progress_step == 0 or processed == total:
             print(f"simulations={processed}/{total}", flush=True)
-            if processed % progress_step == 0 or processed == total
-            else None
-        ),
-    )
+
+    if formal:
+        report = run_formal_probability_v5_null_simulation(
+            args.protocol,
+            args.reference_report,
+            development,
+            lottery=args.lottery,
+            config=config,
+            frozen_periods_excluded=args.frozen_test_periods,
+            iterations=iterations,
+            workers=args.workers,
+            checkpoint_dir=args.checkpoint_dir,
+            progress_callback=progress,
+        )
+    else:
+        report = run_probability_v5_null_simulation(
+            reference,
+            lottery=args.lottery,
+            config=config,
+            history_periods=len(development),
+            frozen_periods_excluded=args.frozen_test_periods,
+            iterations=iterations,
+            workers=args.workers,
+            checkpoint_dir=args.checkpoint_dir,
+            progress_callback=progress,
+        )
     destination = write_probability_v5_null_report(report, args.output)
     print(
         "nullSimulationPassed="

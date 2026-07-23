@@ -38,7 +38,7 @@ AI失败不会改变模型结果，命令会保留确定性说明，并在`ai.st
 
 `probability_v5`使用独立的`DIGIT_V5_SMOKE=1`。该入口至少排除最新500期Frozen，只写`reports/development/`报告，不读取或生成任何v4/v5模型状态。完整开发前必须先执行`make digit-probability-v5-register`；协议和报告相同内容可重复确认，不同内容禁止覆盖。报告中的`validationOpened`、`promotionPassed`、`researchRankingEnabled`和`recommendationEnabled`必须全部为`false`；不得把开发Evaluation命名为Validation，也不得将smoke报告加入模型总账。
 
-`make digit-probability-v5-null-smoke`会在均匀随机历史上完整重放四专家、在线聚合、Calibration和联合闸门。smoke次数必须少于5000且永不通过随机模拟闸门；正式模式必须绑定已登记协议和不可覆盖开发报告、提供`--checkpoint-dir`并恰好运行5000次。检查点按试验编号独立只写一次，重启时校验身份并只计算缺失编号。正式任务在全长度性能基准完成前不得启动。
+`make digit-probability-v5-null-smoke`会在均匀随机历史上完整重放四专家、在线聚合、Calibration和Search+Evaluation联合闸门。smoke次数必须少于5000且永不声明协议已登记或通过随机模拟闸门；正式模式必须传入只读协议/开发报告路径和锁定开发DataFrame、提供`--checkpoint-dir`并恰好运行5000次。协议Frozen边界、报告边界和历史期数必须精确匹配。检查点按完成顺序即时只写一次，重启时校验身份并只计算缺失编号；进程池任何阶段失败都直接失败关闭，不回退线程池。正式任务在全长度性能基准完成前不得启动。
 
 训练参数会记录`validationPassed`和`validationReasons`。参数即使为审计而落盘，只要Validation未同时通过概率质量、目标预算命中和时间稳定性，`digit-learned-ranker-evaluate`就会在读取Frozen之前退出。
 
@@ -85,3 +85,14 @@ AI失败不会改变模型结果，命令会保留确定性说明，并在`ai.st
 ## 清理说明
 
 历史 v1、概率 v2、在线概率 v3 的可执行入口、状态、测试、文档和报告已删除。不要从旧产物恢复兼容路径；新功能直接在 learned ranker 架构下设计并重新验证。
+
+## 快乐8选5开发挑战器
+
+- 运行环境统一使用`uv`和Makefile，不探测或激活conda。官方抓取必须显式执行`make kl8-fetch`（只追加原始JSONL）或`make kl8-fetch-csv`（只允许首次创建`0444`的`data/kl8/kl8.csv`，差异内容或相同内容但可写的目标均拒绝）；程序只允许`cwl.gov.cn`固定接口及`name=kl8`，重定向主机仍需命中白名单。正`periods`必须恰好返回请求量，0必须恰好返回接口宣告总量。
+- 快乐8规范CSV为`issue,date,numbers`。加载器第一遍只读取全部期号/日期确定最新500期Frozen，第二遍仅解析开发区号码；Frozen号码即使损坏也不得被读取或触发解析错误。
+- 完整开发先执行`make kl8-pick5-register`；协议发布后自动为只读，再执行`make kl8-pick5-development`。正式路径只接受逐字段等于默认值的唯一规范配置，且Frozen排除期数固定500；通用smoke可缩短分段/重采样，但不得绑定协议或报告，也不得声称已登记。
+- 协议、开发报告、null报告和逐试验检查点均只写一次；发布路径使用临时文件、`fchmod 0444`、文件`fsync`、原子硬链接和目录`fsync`，JSON序列化禁止NaN/Inf。恢复时任何配置、种子、数据、边界、字段集合、数值范围或哈希不一致均失败关闭。
+- `make kl8-pick5-null-smoke`只允许少量迭代验证链路。正式null至少5000次，必须使用只读协议/报告、锁定开发DataFrame和独立检查点目录；多进程错误不得回退线程。显式执行`make kl8-pick5-null-formal`时默认8 worker，当前10核/16GB机器真实checkpoint基准折算约3.70小时；不得把估算当成已完成证据。
+- 业务监控使用`meanHitsPerTicket`、`meanPortfolioTotalHits`、`exactPortfolioTotalHitsPValue`及最佳票`>=3/>=4/=5`比例；不得把首票审计字段或单票超几何显著性外推为五票证据。
+- `make kl8-pick5-predict-today`从不自动抓取、从不覆盖状态。当前独立Validation、Frozen和准入均未开放，因此正式候选固定为空；显式研究审计只对应锁定Frozen首期并输出目标边界，不得称为今天推荐；不存在未实现的accepted-report兼容入口。
+- 生产监控应记录数据语义哈希、源码指纹、协议/报告哈希、Frozen边界、检查点完成数、试验集哈希和失败栈；不得记录未脱敏外部响应或任何密钥。

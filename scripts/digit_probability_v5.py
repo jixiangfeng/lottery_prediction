@@ -16,10 +16,10 @@ from src.analysis.digit_data import load_digit_development_csv  # noqa: E402
 from src.analysis.digit_probability_v5 import (  # noqa: E402
     ProbabilityV5DevelopmentConfig,
     build_probability_v5_protocol,
-    load_and_verify_probability_v5_protocol,
     prepare_probability_v5_development_history,
     probability_v5_smoke_config,
     run_probability_v5_development,
+    run_registered_probability_v5_development,
     write_probability_v5_protocol,
     write_probability_v5_report,
 )
@@ -63,9 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         else ProbabilityV5DevelopmentConfig()
     )
     development_available = len(development)
-    development = prepare_probability_v5_development_history(
-        development, rule, config
-    )
+    development = prepare_probability_v5_development_history(development, rule, config)
     if args.register_protocol:
         if args.smoke:
             parser.error("登记协议时不得使用--smoke")
@@ -86,21 +84,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not args.output:
         parser.error("开发评估必须提供--output")
-    protocol_sha256 = None
     if args.smoke:
         if args.protocol:
             parser.error("smoke不得绑定正式开发协议")
     else:
         if not args.protocol:
             parser.error("完整开发评估必须提供已登记的--protocol")
-        protocol = load_and_verify_probability_v5_protocol(
-            args.protocol,
-            development,
-            rule,
-            config,
-            frozen_periods_excluded=args.frozen_test_periods,
-        )
-        protocol_sha256 = str(protocol["protocolSha256"])
     print(
         f"mode=development smoke={str(args.smoke).lower()} "
         f"frozenExcluded={args.frozen_test_periods} frozenRead=false "
@@ -108,12 +97,24 @@ def main(argv: list[str] | None = None) -> int:
         f"developmentUsed={len(development)}",
         flush=True,
     )
-    report = run_probability_v5_development(
+    runner = (
+        run_probability_v5_development
+        if args.smoke
+        else lambda history, lottery_rule, development_config, **kwargs: (
+            run_registered_probability_v5_development(
+                args.protocol,
+                history,
+                lottery_rule,
+                development_config,
+                **kwargs,
+            )
+        )
+    )
+    report = runner(
         development,
         rule,
         config,
         frozen_periods_excluded=args.frozen_test_periods,
-        development_protocol_sha256=protocol_sha256,
         progress_callback=lambda processed, total, issue: print(
             f"processed={processed}/{total} issue={issue}", flush=True
         ),
