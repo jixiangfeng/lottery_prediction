@@ -1,0 +1,843 @@
+{
+  "auditFingerprints": {
+    "diagnosticPerIssueSha256": null,
+    "validationFirstIssueSha256": "10b2bd7e7c8114f969b3f8c4318cf91867191eea5007047896140e48edd603e0",
+    "validationLastIssueSha256": "0ee8feb34d6263294bd7cb18e6eaf98ebe4f50eb6a86e288af7fcf4cb481c15a",
+    "validationPerIssueSha256": "00eaa3db49acc90f45df4780c9f268eddb4fe652012af87d279648a6a8f68ccf"
+  },
+  "automaticPromotion": false,
+  "dataSha256": "7799e25e1e907bb20603c783c52179a6e7bba7220874ef1083258aa6e6c12226",
+  "diagnostic": null,
+  "ensembleIntegrity": {
+    "bytesUnchanged": true,
+    "fileSha256Unchanged": true,
+    "reportSha256Unchanged": true
+  },
+  "formalGate": false,
+  "formalRecommendationStatus": "uniform_abstain",
+  "futureChainRequired": true,
+  "generatedDeterministically": true,
+  "historicalEvidenceAlreadyViewed": true,
+  "historicalPromotion": false,
+  "input": {
+    "csvPath": "data/ssq/official_history.csv",
+    "ensembleFileSha256": "8fac0f001c1ccff59ece8776f932f22d738ef7bad881f367f613821828d0f6a1",
+    "ensembleReportPath": "reports/retrospective/ssq_ensemble_v1_through_2026085.json",
+    "ensembleReportSha256": "67069b19d45e0798a91a0e318b6e5e894d7d9e8f2d83209b2c04482786671b26",
+    "frozenPrefixSha256": "7799e25e1e907bb20603c783c52179a6e7bba7220874ef1083258aa6e6c12226",
+    "frozenThroughIssue": "2026085",
+    "latestIssue": "2026085",
+    "periods": 2043
+  },
+  "inputSha256": "56f485b54da2a4607f5be1aadbb27cce93fddbf3176381fd164fadf8ae3dca4f",
+  "predictionClaim": false,
+  "protocol": {
+    "calibration": {
+      "bounds": [
+        -30.0,
+        30.0
+      ],
+      "constraint": "sum(sigmoid(intercept+score_i))=6",
+      "iterations": 80,
+      "method": "fixed_bisection",
+      "tolerance": 1e-12
+    },
+    "candidateCount": 8,
+    "candidates": [
+      {
+        "betaDimension": 2,
+        "candidateId": "F0_L001",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120"
+        ],
+        "featureSet": "F0",
+        "l2": 0.01
+      },
+      {
+        "betaDimension": 2,
+        "candidateId": "F0_L010",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120"
+        ],
+        "featureSet": "F0",
+        "l2": 0.1
+      },
+      {
+        "betaDimension": 4,
+        "candidateId": "F1_L001",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat"
+        ],
+        "featureSet": "F1",
+        "l2": 0.01
+      },
+      {
+        "betaDimension": 4,
+        "candidateId": "F1_L010",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat"
+        ],
+        "featureSet": "F1",
+        "l2": 0.1
+      },
+      {
+        "betaDimension": 5,
+        "candidateId": "F2_L001",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat",
+          "pair-affinity"
+        ],
+        "featureSet": "F2",
+        "l2": 0.01
+      },
+      {
+        "betaDimension": 5,
+        "candidateId": "F2_L010",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat",
+          "pair-affinity"
+        ],
+        "featureSet": "F2",
+        "l2": 0.1
+      },
+      {
+        "betaDimension": 6,
+        "candidateId": "F3_L001",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat",
+          "pair-affinity",
+          "trend"
+        ],
+        "featureSet": "F3",
+        "l2": 0.01
+      },
+      {
+        "betaDimension": 6,
+        "candidateId": "F3_L010",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat",
+          "pair-affinity",
+          "trend"
+        ],
+        "featureSet": "F3",
+        "l2": 0.1
+      }
+    ],
+    "current": "selected candidate replayed from beginning through all2043",
+    "diagnostic": "selected candidate only; latest500; not promotion evidence",
+    "featureEquations": {
+      "EWMA120": "clip((p_EWMA120-6/33)/0.05,-3,3)",
+      "EWMA30": "clip((p_EWMA30-6/33)/0.05,-3,3)",
+      "gap": "log1p(min(gap,60))/log(61)-0.5",
+      "pair-affinity": "mean prior RedPairExpert120 modifier versus prior red6",
+      "prior-repeat": "I(ball in prior red6)-6/33",
+      "trend": "x_EWMA30-x_EWMA120"
+    },
+    "fixed": {
+      "automaticPromotion": false,
+      "cliOverrides": false,
+      "retries": 0
+    },
+    "model": "ssq_challenger_e2_v1",
+    "onlineOrder": "predict-lock-score-update",
+    "parameters": {
+      "epsilon": 1e-08,
+      "eta": 0.05,
+      "fixedEffects": 33,
+      "fixedEffectsConstraint": "zero_mean_after_each_update",
+      "initialAccumulator": 1e-06,
+      "optimizer": "AdaGrad"
+    },
+    "partitions": {
+      "diagnostic": 500,
+      "search": 923,
+      "total": 2043,
+      "validation": 500,
+      "warmup": 120
+    },
+    "purpose": "finite_selection_retrospective_research_only",
+    "selection": {
+      "blocks": "five consecutive 100; at least four nonnegative; none below -0.05",
+      "noneEligible": "rejected",
+      "order": "LogLoss asc, Brier asc, mean red8 delta desc, candidateId asc",
+      "paired": "mean candidate-minus-D8 red8 actual overlap > 0",
+      "posthocRelaxation": false,
+      "proper": "candidate LogLoss < uniform AND candidate Brier <= uniform",
+      "recordOnly": "red6",
+      "secondaryOnly": "red5 rate"
+    },
+    "tieBreak": "probability_descending_then_ball_ascending"
+  },
+  "protocolSha256": "1d9b224208388648ca98b9b790770bb51fa103a6ca771c24041a53e2addd8627",
+  "reportSha256": "bdabecc5e36c6ece605e2e0076155e03b304af316a67808529daa35864517deb",
+  "researchOnly": true,
+  "retrospective": true,
+  "schemaVersion": "ssq_challenger_e2_selection_v1",
+  "selectedCandidateId": null,
+  "selectionStatus": "rejected",
+  "splits": {
+    "diagnostic": {
+      "endIndexExclusive": 2043,
+      "firstDate": "2023-04-09",
+      "firstIssue": "2023039",
+      "lastDate": "2026-07-26",
+      "lastIssue": "2026085",
+      "periods": 500,
+      "startIndex": 1543
+    },
+    "search": {
+      "endIndexExclusive": 1043,
+      "firstDate": "2013-10-15",
+      "firstIssue": "2013121",
+      "lastDate": "2019-10-27",
+      "lastIssue": "2019123",
+      "periods": 923,
+      "startIndex": 120
+    },
+    "validation": {
+      "endIndexExclusive": 1543,
+      "firstDate": "2019-10-29",
+      "firstIssue": "2019124",
+      "lastDate": "2023-04-06",
+      "lastIssue": "2023038",
+      "periods": 500,
+      "startIndex": 1043
+    },
+    "warmup": {
+      "endIndexExclusive": 120,
+      "firstDate": "2013-01-01",
+      "firstIssue": "2013001",
+      "lastDate": "2013-10-13",
+      "lastIssue": "2013120",
+      "periods": 120,
+      "startIndex": 0
+    }
+  },
+  "validation": {
+    "auditSha256": "00eaa3db49acc90f45df4780c9f268eddb4fe652012af87d279648a6a8f68ccf",
+    "candidateCount": 8,
+    "candidates": [
+      {
+        "candidateId": "F0_L001",
+        "eligibility": {
+          "checks": {
+            "atLeastFourNonnegativeBlocks": false,
+            "brierNoWorseThanUniform": false,
+            "logLossStrictlyBetterThanUniform": false,
+            "meanRed8OverlapCandidateMinusD8Positive": false,
+            "noBlockBelowMinus0_05": false
+          },
+          "eligible": false,
+          "recordOnlyRed6UsedForSelection": false,
+          "secondaryRed5UsedForSelection": false
+        },
+        "paired": {
+          "blocks": [
+            {
+              "blockIndex": 0,
+              "endValidationOffsetExclusive": 100,
+              "meanRed8OverlapCandidateMinusD8": -0.3,
+              "periods": 100,
+              "startValidationOffset": 0
+            },
+            {
+              "blockIndex": 1,
+              "endValidationOffsetExclusive": 200,
+              "meanRed8OverlapCandidateMinusD8": 0.01,
+              "periods": 100,
+              "startValidationOffset": 100
+            },
+            {
+              "blockIndex": 2,
+              "endValidationOffsetExclusive": 300,
+              "meanRed8OverlapCandidateMinusD8": 0.1,
+              "periods": 100,
+              "startValidationOffset": 200
+            },
+            {
+              "blockIndex": 3,
+              "endValidationOffsetExclusive": 400,
+              "meanRed8OverlapCandidateMinusD8": -0.13,
+              "periods": 100,
+              "startValidationOffset": 300
+            },
+            {
+              "blockIndex": 4,
+              "endValidationOffsetExclusive": 500,
+              "meanRed8OverlapCandidateMinusD8": 0.05,
+              "periods": 100,
+              "startValidationOffset": 400
+            }
+          ],
+          "meanRed8OverlapCandidate": 1.446,
+          "meanRed8OverlapCandidateMinusD8": -0.054,
+          "meanRed8OverlapD8": 1.5,
+          "red5RateCandidate": 0.002,
+          "red5RateCandidateMinusD8": -0.004,
+          "red5RateD8": 0.006,
+          "red6CountCandidate": 0,
+          "red6CountCandidateMinusD8": 0,
+          "red6CountD8": 0
+        },
+        "properScores": {
+          "candidate": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487616630742308,
+            "redLogLossPerBall": 0.47414376450133017
+          },
+          "uniform": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487603305785123,
+            "redLogLossPerBall": 0.47413931305783696
+          }
+        }
+      },
+      {
+        "candidateId": "F0_L010",
+        "eligibility": {
+          "checks": {
+            "atLeastFourNonnegativeBlocks": false,
+            "brierNoWorseThanUniform": false,
+            "logLossStrictlyBetterThanUniform": false,
+            "meanRed8OverlapCandidateMinusD8Positive": false,
+            "noBlockBelowMinus0_05": false
+          },
+          "eligible": false,
+          "recordOnlyRed6UsedForSelection": false,
+          "secondaryRed5UsedForSelection": false
+        },
+        "paired": {
+          "blocks": [
+            {
+              "blockIndex": 0,
+              "endValidationOffsetExclusive": 100,
+              "meanRed8OverlapCandidateMinusD8": -0.3,
+              "periods": 100,
+              "startValidationOffset": 0
+            },
+            {
+              "blockIndex": 1,
+              "endValidationOffsetExclusive": 200,
+              "meanRed8OverlapCandidateMinusD8": 0.04,
+              "periods": 100,
+              "startValidationOffset": 100
+            },
+            {
+              "blockIndex": 2,
+              "endValidationOffsetExclusive": 300,
+              "meanRed8OverlapCandidateMinusD8": -0.06,
+              "periods": 100,
+              "startValidationOffset": 200
+            },
+            {
+              "blockIndex": 3,
+              "endValidationOffsetExclusive": 400,
+              "meanRed8OverlapCandidateMinusD8": -0.12,
+              "periods": 100,
+              "startValidationOffset": 300
+            },
+            {
+              "blockIndex": 4,
+              "endValidationOffsetExclusive": 500,
+              "meanRed8OverlapCandidateMinusD8": 0.13,
+              "periods": 100,
+              "startValidationOffset": 400
+            }
+          ],
+          "meanRed8OverlapCandidate": 1.438,
+          "meanRed8OverlapCandidateMinusD8": -0.062,
+          "meanRed8OverlapD8": 1.5,
+          "red5RateCandidate": 0.006,
+          "red5RateCandidateMinusD8": 0.0,
+          "red5RateD8": 0.006,
+          "red6CountCandidate": 1,
+          "red6CountCandidateMinusD8": 1,
+          "red6CountD8": 0
+        },
+        "properScores": {
+          "candidate": {
+            "observations": 500,
+            "redBrierPerBall": 0.14877290634098647,
+            "redLogLossPerBall": 0.4741815557837586
+          },
+          "uniform": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487603305785123,
+            "redLogLossPerBall": 0.47413931305783696
+          }
+        }
+      },
+      {
+        "candidateId": "F1_L001",
+        "eligibility": {
+          "checks": {
+            "atLeastFourNonnegativeBlocks": false,
+            "brierNoWorseThanUniform": false,
+            "logLossStrictlyBetterThanUniform": false,
+            "meanRed8OverlapCandidateMinusD8Positive": false,
+            "noBlockBelowMinus0_05": false
+          },
+          "eligible": false,
+          "recordOnlyRed6UsedForSelection": false,
+          "secondaryRed5UsedForSelection": false
+        },
+        "paired": {
+          "blocks": [
+            {
+              "blockIndex": 0,
+              "endValidationOffsetExclusive": 100,
+              "meanRed8OverlapCandidateMinusD8": -0.32,
+              "periods": 100,
+              "startValidationOffset": 0
+            },
+            {
+              "blockIndex": 1,
+              "endValidationOffsetExclusive": 200,
+              "meanRed8OverlapCandidateMinusD8": 0.11,
+              "periods": 100,
+              "startValidationOffset": 100
+            },
+            {
+              "blockIndex": 2,
+              "endValidationOffsetExclusive": 300,
+              "meanRed8OverlapCandidateMinusD8": 0.01,
+              "periods": 100,
+              "startValidationOffset": 200
+            },
+            {
+              "blockIndex": 3,
+              "endValidationOffsetExclusive": 400,
+              "meanRed8OverlapCandidateMinusD8": -0.19,
+              "periods": 100,
+              "startValidationOffset": 300
+            },
+            {
+              "blockIndex": 4,
+              "endValidationOffsetExclusive": 500,
+              "meanRed8OverlapCandidateMinusD8": -0.03,
+              "periods": 100,
+              "startValidationOffset": 400
+            }
+          ],
+          "meanRed8OverlapCandidate": 1.416,
+          "meanRed8OverlapCandidateMinusD8": -0.084,
+          "meanRed8OverlapD8": 1.5,
+          "red5RateCandidate": 0.002,
+          "red5RateCandidateMinusD8": -0.004,
+          "red5RateD8": 0.006,
+          "red6CountCandidate": 0,
+          "red6CountCandidateMinusD8": 0,
+          "red6CountD8": 0
+        },
+        "properScores": {
+          "candidate": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487620899834407,
+            "redLogLossPerBall": 0.4741450254630506
+          },
+          "uniform": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487603305785123,
+            "redLogLossPerBall": 0.47413931305783696
+          }
+        }
+      },
+      {
+        "candidateId": "F1_L010",
+        "eligibility": {
+          "checks": {
+            "atLeastFourNonnegativeBlocks": false,
+            "brierNoWorseThanUniform": false,
+            "logLossStrictlyBetterThanUniform": false,
+            "meanRed8OverlapCandidateMinusD8Positive": false,
+            "noBlockBelowMinus0_05": false
+          },
+          "eligible": false,
+          "recordOnlyRed6UsedForSelection": false,
+          "secondaryRed5UsedForSelection": false
+        },
+        "paired": {
+          "blocks": [
+            {
+              "blockIndex": 0,
+              "endValidationOffsetExclusive": 100,
+              "meanRed8OverlapCandidateMinusD8": -0.3,
+              "periods": 100,
+              "startValidationOffset": 0
+            },
+            {
+              "blockIndex": 1,
+              "endValidationOffsetExclusive": 200,
+              "meanRed8OverlapCandidateMinusD8": 0.0,
+              "periods": 100,
+              "startValidationOffset": 100
+            },
+            {
+              "blockIndex": 2,
+              "endValidationOffsetExclusive": 300,
+              "meanRed8OverlapCandidateMinusD8": -0.01,
+              "periods": 100,
+              "startValidationOffset": 200
+            },
+            {
+              "blockIndex": 3,
+              "endValidationOffsetExclusive": 400,
+              "meanRed8OverlapCandidateMinusD8": -0.14,
+              "periods": 100,
+              "startValidationOffset": 300
+            },
+            {
+              "blockIndex": 4,
+              "endValidationOffsetExclusive": 500,
+              "meanRed8OverlapCandidateMinusD8": 0.02,
+              "periods": 100,
+              "startValidationOffset": 400
+            }
+          ],
+          "meanRed8OverlapCandidate": 1.414,
+          "meanRed8OverlapCandidateMinusD8": -0.086,
+          "meanRed8OverlapD8": 1.5,
+          "red5RateCandidate": 0.002,
+          "red5RateCandidateMinusD8": -0.004,
+          "red5RateD8": 0.006,
+          "red6CountCandidate": 0,
+          "red6CountCandidateMinusD8": 0,
+          "red6CountD8": 0
+        },
+        "properScores": {
+          "candidate": {
+            "observations": 500,
+            "redBrierPerBall": 0.14877520780986786,
+            "redLogLossPerBall": 0.47418927110970793
+          },
+          "uniform": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487603305785123,
+            "redLogLossPerBall": 0.47413931305783696
+          }
+        }
+      },
+      {
+        "candidateId": "F2_L001",
+        "eligibility": {
+          "checks": {
+            "atLeastFourNonnegativeBlocks": false,
+            "brierNoWorseThanUniform": false,
+            "logLossStrictlyBetterThanUniform": false,
+            "meanRed8OverlapCandidateMinusD8Positive": false,
+            "noBlockBelowMinus0_05": false
+          },
+          "eligible": false,
+          "recordOnlyRed6UsedForSelection": false,
+          "secondaryRed5UsedForSelection": false
+        },
+        "paired": {
+          "blocks": [
+            {
+              "blockIndex": 0,
+              "endValidationOffsetExclusive": 100,
+              "meanRed8OverlapCandidateMinusD8": -0.38,
+              "periods": 100,
+              "startValidationOffset": 0
+            },
+            {
+              "blockIndex": 1,
+              "endValidationOffsetExclusive": 200,
+              "meanRed8OverlapCandidateMinusD8": 0.09,
+              "periods": 100,
+              "startValidationOffset": 100
+            },
+            {
+              "blockIndex": 2,
+              "endValidationOffsetExclusive": 300,
+              "meanRed8OverlapCandidateMinusD8": 0.03,
+              "periods": 100,
+              "startValidationOffset": 200
+            },
+            {
+              "blockIndex": 3,
+              "endValidationOffsetExclusive": 400,
+              "meanRed8OverlapCandidateMinusD8": -0.18,
+              "periods": 100,
+              "startValidationOffset": 300
+            },
+            {
+              "blockIndex": 4,
+              "endValidationOffsetExclusive": 500,
+              "meanRed8OverlapCandidateMinusD8": -0.01,
+              "periods": 100,
+              "startValidationOffset": 400
+            }
+          ],
+          "meanRed8OverlapCandidate": 1.41,
+          "meanRed8OverlapCandidateMinusD8": -0.09,
+          "meanRed8OverlapD8": 1.5,
+          "red5RateCandidate": 0.002,
+          "red5RateCandidateMinusD8": -0.004,
+          "red5RateD8": 0.006,
+          "red6CountCandidate": 0,
+          "red6CountCandidateMinusD8": 0,
+          "red6CountD8": 0
+        },
+        "properScores": {
+          "candidate": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487652329477191,
+            "redLogLossPerBall": 0.4741555096243602
+          },
+          "uniform": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487603305785123,
+            "redLogLossPerBall": 0.47413931305783696
+          }
+        }
+      },
+      {
+        "candidateId": "F2_L010",
+        "eligibility": {
+          "checks": {
+            "atLeastFourNonnegativeBlocks": false,
+            "brierNoWorseThanUniform": false,
+            "logLossStrictlyBetterThanUniform": false,
+            "meanRed8OverlapCandidateMinusD8Positive": false,
+            "noBlockBelowMinus0_05": false
+          },
+          "eligible": false,
+          "recordOnlyRed6UsedForSelection": false,
+          "secondaryRed5UsedForSelection": false
+        },
+        "paired": {
+          "blocks": [
+            {
+              "blockIndex": 0,
+              "endValidationOffsetExclusive": 100,
+              "meanRed8OverlapCandidateMinusD8": -0.29,
+              "periods": 100,
+              "startValidationOffset": 0
+            },
+            {
+              "blockIndex": 1,
+              "endValidationOffsetExclusive": 200,
+              "meanRed8OverlapCandidateMinusD8": 0.03,
+              "periods": 100,
+              "startValidationOffset": 100
+            },
+            {
+              "blockIndex": 2,
+              "endValidationOffsetExclusive": 300,
+              "meanRed8OverlapCandidateMinusD8": 0.0,
+              "periods": 100,
+              "startValidationOffset": 200
+            },
+            {
+              "blockIndex": 3,
+              "endValidationOffsetExclusive": 400,
+              "meanRed8OverlapCandidateMinusD8": -0.1,
+              "periods": 100,
+              "startValidationOffset": 300
+            },
+            {
+              "blockIndex": 4,
+              "endValidationOffsetExclusive": 500,
+              "meanRed8OverlapCandidateMinusD8": -0.02,
+              "periods": 100,
+              "startValidationOffset": 400
+            }
+          ],
+          "meanRed8OverlapCandidate": 1.424,
+          "meanRed8OverlapCandidateMinusD8": -0.076,
+          "meanRed8OverlapD8": 1.5,
+          "red5RateCandidate": 0.002,
+          "red5RateCandidateMinusD8": -0.004,
+          "red5RateD8": 0.006,
+          "red6CountCandidate": 0,
+          "red6CountCandidateMinusD8": 0,
+          "red6CountD8": 0
+        },
+        "properScores": {
+          "candidate": {
+            "observations": 500,
+            "redBrierPerBall": 0.14877655675572135,
+            "redLogLossPerBall": 0.4741938040024967
+          },
+          "uniform": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487603305785123,
+            "redLogLossPerBall": 0.47413931305783696
+          }
+        }
+      },
+      {
+        "candidateId": "F3_L001",
+        "eligibility": {
+          "checks": {
+            "atLeastFourNonnegativeBlocks": false,
+            "brierNoWorseThanUniform": false,
+            "logLossStrictlyBetterThanUniform": false,
+            "meanRed8OverlapCandidateMinusD8Positive": false,
+            "noBlockBelowMinus0_05": false
+          },
+          "eligible": false,
+          "recordOnlyRed6UsedForSelection": false,
+          "secondaryRed5UsedForSelection": false
+        },
+        "paired": {
+          "blocks": [
+            {
+              "blockIndex": 0,
+              "endValidationOffsetExclusive": 100,
+              "meanRed8OverlapCandidateMinusD8": -0.38,
+              "periods": 100,
+              "startValidationOffset": 0
+            },
+            {
+              "blockIndex": 1,
+              "endValidationOffsetExclusive": 200,
+              "meanRed8OverlapCandidateMinusD8": 0.04,
+              "periods": 100,
+              "startValidationOffset": 100
+            },
+            {
+              "blockIndex": 2,
+              "endValidationOffsetExclusive": 300,
+              "meanRed8OverlapCandidateMinusD8": 0.06,
+              "periods": 100,
+              "startValidationOffset": 200
+            },
+            {
+              "blockIndex": 3,
+              "endValidationOffsetExclusive": 400,
+              "meanRed8OverlapCandidateMinusD8": -0.21,
+              "periods": 100,
+              "startValidationOffset": 300
+            },
+            {
+              "blockIndex": 4,
+              "endValidationOffsetExclusive": 500,
+              "meanRed8OverlapCandidateMinusD8": -0.04,
+              "periods": 100,
+              "startValidationOffset": 400
+            }
+          ],
+          "meanRed8OverlapCandidate": 1.394,
+          "meanRed8OverlapCandidateMinusD8": -0.106,
+          "meanRed8OverlapD8": 1.5,
+          "red5RateCandidate": 0.002,
+          "red5RateCandidateMinusD8": -0.004,
+          "red5RateD8": 0.006,
+          "red6CountCandidate": 0,
+          "red6CountCandidateMinusD8": 0,
+          "red6CountD8": 0
+        },
+        "properScores": {
+          "candidate": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487779435293486,
+            "redLogLossPerBall": 0.4741983824913007
+          },
+          "uniform": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487603305785123,
+            "redLogLossPerBall": 0.47413931305783696
+          }
+        }
+      },
+      {
+        "candidateId": "F3_L010",
+        "eligibility": {
+          "checks": {
+            "atLeastFourNonnegativeBlocks": false,
+            "brierNoWorseThanUniform": false,
+            "logLossStrictlyBetterThanUniform": false,
+            "meanRed8OverlapCandidateMinusD8Positive": false,
+            "noBlockBelowMinus0_05": false
+          },
+          "eligible": false,
+          "recordOnlyRed6UsedForSelection": false,
+          "secondaryRed5UsedForSelection": false
+        },
+        "paired": {
+          "blocks": [
+            {
+              "blockIndex": 0,
+              "endValidationOffsetExclusive": 100,
+              "meanRed8OverlapCandidateMinusD8": -0.31,
+              "periods": 100,
+              "startValidationOffset": 0
+            },
+            {
+              "blockIndex": 1,
+              "endValidationOffsetExclusive": 200,
+              "meanRed8OverlapCandidateMinusD8": 0.07,
+              "periods": 100,
+              "startValidationOffset": 100
+            },
+            {
+              "blockIndex": 2,
+              "endValidationOffsetExclusive": 300,
+              "meanRed8OverlapCandidateMinusD8": -0.01,
+              "periods": 100,
+              "startValidationOffset": 200
+            },
+            {
+              "blockIndex": 3,
+              "endValidationOffsetExclusive": 400,
+              "meanRed8OverlapCandidateMinusD8": -0.13,
+              "periods": 100,
+              "startValidationOffset": 300
+            },
+            {
+              "blockIndex": 4,
+              "endValidationOffsetExclusive": 500,
+              "meanRed8OverlapCandidateMinusD8": 0.03,
+              "periods": 100,
+              "startValidationOffset": 400
+            }
+          ],
+          "meanRed8OverlapCandidate": 1.43,
+          "meanRed8OverlapCandidateMinusD8": -0.07,
+          "meanRed8OverlapD8": 1.5,
+          "red5RateCandidate": 0.002,
+          "red5RateCandidateMinusD8": -0.004,
+          "red5RateD8": 0.006,
+          "red6CountCandidate": 0,
+          "red6CountCandidateMinusD8": 0,
+          "red6CountD8": 0
+        },
+        "properScores": {
+          "candidate": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487818508034831,
+            "redLogLossPerBall": 0.4742114687405346
+          },
+          "uniform": {
+            "observations": 500,
+            "redBrierPerBall": 0.1487603305785123,
+            "redLogLossPerBall": 0.47413931305783696
+          }
+        }
+      }
+    ],
+    "periods": 500
+  }
+}

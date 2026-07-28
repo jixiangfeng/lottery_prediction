@@ -1,0 +1,192 @@
+{
+  "automaticPromotion": false,
+  "currentTargetGroup": null,
+  "ensembleIntegrity": {
+    "bytesUnchanged": true,
+    "fileSha256Unchanged": true,
+    "reportSha256Unchanged": true
+  },
+  "fingerprints": {
+    "inputSha256": "33937899e4298834a831d89664893545421b861bda00fad1b19c6b2be4ad4790",
+    "predictionSha256": null,
+    "stateSha256": null
+  },
+  "formalGate": false,
+  "formalRecommendationStatus": "uniform_abstain",
+  "generatedDeterministically": true,
+  "input": {
+    "csvPath": "data/ssq/official_history.csv",
+    "csvSha256": "836e48e0458c531f7702fa4248d3c3e3a1fc6ae45d1967227ee7b631ea8c760f",
+    "ensembleFileSha256": "8fac0f001c1ccff59ece8776f932f22d738ef7bad881f367f613821828d0f6a1",
+    "ensembleReportPath": "reports/research/ssq_ensemble_v1.json",
+    "ensembleReportSha256": "67069b19d45e0798a91a0e318b6e5e894d7d9e8f2d83209b2c04482786671b26"
+  },
+  "probabilities": null,
+  "prospectiveArtifactsCreated": false,
+  "protocol": {
+    "calibration": {
+      "bounds": [
+        -30.0,
+        30.0
+      ],
+      "constraint": "sum(sigmoid(intercept+score_i))=6",
+      "iterations": 80,
+      "method": "fixed_bisection",
+      "tolerance": 1e-12
+    },
+    "candidateCount": 8,
+    "candidates": [
+      {
+        "betaDimension": 2,
+        "candidateId": "F0_L001",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120"
+        ],
+        "featureSet": "F0",
+        "l2": 0.01
+      },
+      {
+        "betaDimension": 2,
+        "candidateId": "F0_L010",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120"
+        ],
+        "featureSet": "F0",
+        "l2": 0.1
+      },
+      {
+        "betaDimension": 4,
+        "candidateId": "F1_L001",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat"
+        ],
+        "featureSet": "F1",
+        "l2": 0.01
+      },
+      {
+        "betaDimension": 4,
+        "candidateId": "F1_L010",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat"
+        ],
+        "featureSet": "F1",
+        "l2": 0.1
+      },
+      {
+        "betaDimension": 5,
+        "candidateId": "F2_L001",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat",
+          "pair-affinity"
+        ],
+        "featureSet": "F2",
+        "l2": 0.01
+      },
+      {
+        "betaDimension": 5,
+        "candidateId": "F2_L010",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat",
+          "pair-affinity"
+        ],
+        "featureSet": "F2",
+        "l2": 0.1
+      },
+      {
+        "betaDimension": 6,
+        "candidateId": "F3_L001",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat",
+          "pair-affinity",
+          "trend"
+        ],
+        "featureSet": "F3",
+        "l2": 0.01
+      },
+      {
+        "betaDimension": 6,
+        "candidateId": "F3_L010",
+        "featureMask": [
+          "EWMA30",
+          "EWMA120",
+          "gap",
+          "prior-repeat",
+          "pair-affinity",
+          "trend"
+        ],
+        "featureSet": "F3",
+        "l2": 0.1
+      }
+    ],
+    "current": "selected candidate replayed from beginning through all2043",
+    "diagnostic": "selected candidate only; latest500; not promotion evidence",
+    "featureEquations": {
+      "EWMA120": "clip((p_EWMA120-6/33)/0.05,-3,3)",
+      "EWMA30": "clip((p_EWMA30-6/33)/0.05,-3,3)",
+      "gap": "log1p(min(gap,60))/log(61)-0.5",
+      "pair-affinity": "mean prior RedPairExpert120 modifier versus prior red6",
+      "prior-repeat": "I(ball in prior red6)-6/33",
+      "trend": "x_EWMA30-x_EWMA120"
+    },
+    "fixed": {
+      "automaticPromotion": false,
+      "cliOverrides": false,
+      "retries": 0
+    },
+    "model": "ssq_challenger_e2_v1",
+    "onlineOrder": "predict-lock-score-update",
+    "parameters": {
+      "epsilon": 1e-08,
+      "eta": 0.05,
+      "fixedEffects": 33,
+      "fixedEffectsConstraint": "zero_mean_after_each_update",
+      "initialAccumulator": 1e-06,
+      "optimizer": "AdaGrad"
+    },
+    "partitions": {
+      "diagnostic": 500,
+      "search": 923,
+      "total": 2043,
+      "validation": 500,
+      "warmup": 120
+    },
+    "purpose": "finite_selection_retrospective_research_only",
+    "selection": {
+      "blocks": "five consecutive 100; at least four nonnegative; none below -0.05",
+      "noneEligible": "rejected",
+      "order": "LogLoss asc, Brier asc, mean red8 delta desc, candidateId asc",
+      "paired": "mean candidate-minus-D8 red8 actual overlap > 0",
+      "posthocRelaxation": false,
+      "proper": "candidate LogLoss < uniform AND candidate Brier <= uniform",
+      "recordOnly": "red6",
+      "secondaryOnly": "red5 rate"
+    },
+    "tieBreak": "probability_descending_then_ball_ascending"
+  },
+  "protocolSha256": "1d9b224208388648ca98b9b790770bb51fa103a6ca771c24041a53e2addd8627",
+  "reportSha256": "42ce1db351ed838eaf62f7560d29310cce82bcf81131d0f83f83e17b1d60436a",
+  "researchOnly": true,
+  "retrospective": false,
+  "schemaVersion": "ssq_challenger_e2_v1",
+  "selectedCandidateId": null,
+  "selectionReportSha256": "df6ddbb7a5c5e4e448974dc33c4b20c784a8df1a9dd87fac80284d9ec817ac24",
+  "selectionStatus": "rejected",
+  "state": null
+}

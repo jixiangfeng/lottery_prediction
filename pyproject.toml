@@ -1,0 +1,9 @@
+[project]
+name = "lottery-prediction"
+version = "0.0.0"
+description = "Research-only lottery evaluation and prospective protocol system"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.black]
+line-length = 88
