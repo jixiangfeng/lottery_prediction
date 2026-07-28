@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""双色球、大乐透、快乐8玩法注册表。"""
+"""双色球与超级大乐透玩法注册表。"""
 
 from __future__ import annotations
 
@@ -7,13 +7,12 @@ from typing import TypeAlias
 
 from src.lotteries.base import BallSpec, LotteryRule, validate_numbers
 from src.lotteries.dlt import DLT_RULE, DLTRule
-from src.lotteries.kl8 import KL8_RULE
 from src.lotteries.ssq import SSQ_RULE, SSQRule
 
 RegisteredRule: TypeAlias = LotteryRule | SSQRule | DLTRule
 
 LOTTERY_RULES: dict[str, RegisteredRule] = {
-    rule.code: rule for rule in (SSQ_RULE, DLT_RULE, KL8_RULE)
+    rule.code: rule for rule in (SSQ_RULE, DLT_RULE)
 }
 
 
@@ -27,7 +26,7 @@ def get_lottery_rule(code: str) -> RegisteredRule:
 
 
 def list_lottery_rules() -> list[RegisteredRule]:
-    """返回双色球、大乐透和快乐8规则。"""
+    """返回双色球和超级大乐透规则。"""
 
     return list(LOTTERY_RULES.values())
 

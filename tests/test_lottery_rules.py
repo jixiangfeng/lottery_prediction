@@ -11,10 +11,9 @@ from src.lotteries.ssq import SSQ_RULE
 def test_registry_contains_only_retained_lotteries():
     rules = {rule.code: rule for rule in list_lottery_rules()}
 
-    assert set(rules) == {"ssq", "dlt", "kl8"}
+    assert set(rules) == {"ssq", "dlt"}
     assert rules["ssq"].display_name == "双色球"
     assert rules["dlt"].display_name == "超级大乐透"
-    assert rules["kl8"].display_name == "快乐8"
 
 
 def test_retained_zone_rules_validate_draws():

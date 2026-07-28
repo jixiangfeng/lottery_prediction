@@ -6,7 +6,6 @@
 |---|---|---|
 | `ssq` | 双色球 | `scripts/ssq_*.py`、`src/analysis/ssq_*.py` |
 | `dlt` | 超级大乐透 | `scripts/dlt_*.py`、`src/analysis/dlt_*.py` |
-| `kl8` | 快乐8 | `scripts/kl8_*.py`、`src/analysis/kl8_*.py` |
 
 规则注册表：
 

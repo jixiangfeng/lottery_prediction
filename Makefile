@@ -1,4 +1,4 @@
-# 双色球、超级大乐透、快乐8研究工具
+# 双色球、超级大乐透研究工具
 
 .DEFAULT_GOAL := help
 RUN ?= uv run --python 3.11 --with-requirements requirements-dev.txt python
@@ -30,14 +30,6 @@ DLT_SEARCH_REPORT ?= $(OUTPUT_DIR)/research/dlt_7plus2_search_v1.json
 DLT_VALIDATION_REPORT ?= $(OUTPUT_DIR)/retrospective/dlt_7plus2_validation_v1.json
 DLT_C5_DIAGNOSTIC_REPORT ?= $(OUTPUT_DIR)/development/dlt_7plus2_c5_diagnostic_v1.json
 
-KL8_CSV ?= data/kl8/kl8.csv
-KL8_RAW_JSONL ?= data/kl8/raw/history.jsonl
-KL8_FETCH_PERIODS ?= 0
-KL8_FROZEN_PERIODS ?= 500
-KL8_PICK4_JOINT_STATE ?= state/kl8_pick4_joint_ab_v1
-KL8_PICK4_JOINT_KEY ?= $(HOME)/.hermes/secrets/kl8_pick4_joint_ab_v1.key
-KL8_PICK4_GENERATE_KEY ?= 0
-
 .PHONY: setup fmt lint test build run ci clean help \
 	ssq-fetch ssq-reconcile ssq-evaluate ssq-weight-train-v2 \
 	ssq-small-compound-history ssq-diversified-history \
@@ -45,12 +37,10 @@ KL8_PICK4_GENERATE_KEY ?= 0
 	ssq-d8-history ssq-d8-register ssq-d8-snapshot ssq-d8-update ssq-d8-status \
 	ssq-e-current ssq-e-history ssq-e2 \
 	ssq-e-register ssq-e-snapshot ssq-e-update ssq-e-status \
-	dlt-fetch dlt-reconcile dlt-search dlt-validation dlt-c5-diagnostic \
-	kl8-fetch kl8-fetch-csv kl8-pick4-predict kl8-pick4-rank \
-	kl8-pick4-joint-initialize kl8-pick4-joint-step kl8-pick4-joint-status
+	dlt-fetch dlt-reconcile dlt-search dlt-validation dlt-c5-diagnostic
 
-setup: ## 创建仅保留三类彩票的运行目录
-	$(RUN) -c "from pathlib import Path; [Path(p).mkdir(parents=True, exist_ok=True) for p in ['data/ssq/raw','data/dlt/raw','data/kl8/raw','reports','logs']]"
+setup: ## 创建仅保留双色球与超级大乐透的运行目录
+	$(RUN) -c "from pathlib import Path; [Path(p).mkdir(parents=True, exist_ok=True) for p in ['data/ssq/raw','data/dlt/raw','reports','logs']]"
 
 fmt: ## 格式化Python代码
 	$(RUN) -m black --fast src tests scripts examples
@@ -117,22 +107,6 @@ dlt-validation:
 dlt-c5-diagnostic:
 	$(RUN) scripts/dlt_7plus2_c5_diagnostic_v1.py --csv $(DLT_CSV) --output $(DLT_C5_DIAGNOSTIC_REPORT)
 
-# 快乐8
-kl8-fetch:
-	$(RUN) scripts/kl8_fetch_history.py --periods $(KL8_FETCH_PERIODS) --output-jsonl $(KL8_RAW_JSONL)
-kl8-fetch-csv:
-	$(RUN) scripts/kl8_fetch_history.py --periods $(KL8_FETCH_PERIODS) --output-csv $(KL8_CSV)
-kl8-pick4-predict:
-	$(RUN) scripts/kl8_pick4_predict_today.py --csv $(KL8_CSV) --frozen-periods $(KL8_FROZEN_PERIODS)
-kl8-pick4-rank:
-	$(RUN) scripts/kl8_pick4_rank_challenger.py --csv $(KL8_CSV) --frozen-periods $(KL8_FROZEN_PERIODS)
-kl8-pick4-joint-initialize:
-	$(RUN) scripts/kl8_pick4_joint_ab_v1.py initialize --csv $(KL8_CSV) --state-dir $(KL8_PICK4_JOINT_STATE) --hmac-key-file $(KL8_PICK4_JOINT_KEY) $(if $(filter 1 true yes,$(KL8_PICK4_GENERATE_KEY)),--generate-hmac-key,)
-kl8-pick4-joint-step:
-	$(RUN) scripts/kl8_pick4_joint_ab_v1.py step --csv $(KL8_CSV) --state-dir $(KL8_PICK4_JOINT_STATE) --hmac-key-file $(KL8_PICK4_JOINT_KEY)
-kl8-pick4-joint-status:
-	$(RUN) scripts/kl8_pick4_joint_ab_v1.py status --csv $(KL8_CSV) --state-dir $(KL8_PICK4_JOINT_STATE) --hmac-key-file $(KL8_PICK4_JOINT_KEY)
-
 ci: lint test build
 	@echo "本地 CI 全部通过"
 
@@ -140,6 +114,6 @@ clean:
 	$(RUN) -c "import pathlib, shutil; [shutil.rmtree(p, ignore_errors=True) for n in ['build','dist','.pytest_cache','htmlcov'] for p in [pathlib.Path(n)]]; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"
 
 help:
-	@echo "保留玩法：双色球(ssq)、超级大乐透(dlt)、快乐8(kl8)"
-	@echo "make ssq-evaluate | dlt-search | dlt-validation | kl8-pick4-joint-status"
+	@echo "保留玩法：双色球(ssq)、超级大乐透(dlt)"
+	@echo "make ssq-evaluate | dlt-search | dlt-validation"
 	@echo "make ci  运行完整质量闸门"

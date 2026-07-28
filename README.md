@@ -1,10 +1,9 @@
-# 彩票研究工具：双色球、超级大乐透、快乐8
+# 彩票研究工具：双色球、超级大乐透
 
-本仓库只保留三个相互隔离的研究域：
+本仓库只保留两个相互隔离的研究域：
 
 - `ssq`：双色球，官方历史、严格前序评估、B/D8/E影子链；
-- `dlt`：超级大乐透，官方历史、7+2固定成本Search/Validation研究；
-- `kl8`：快乐8，官方历史、选4同成本A/B前瞻链及选5研究工具。
+- `dlt`：超级大乐透，官方历史、7+2固定成本Search/Validation研究。
 
 所有输出均为研究用途，不承诺中奖，不自动下单，不自动提高预算。模型未通过固定闸门时统一保持`uniform_abstain`。
 
@@ -30,17 +29,11 @@ make dlt-reconcile
 make dlt-search
 make dlt-validation
 
-# 快乐8
-make kl8-fetch
-make kl8-pick4-joint-status
-```
-
 ## 数据目录
 
 ```text
 data/ssq/
 data/dlt/
-data/kl8/
 ```
 
 ## 审计原则

@@ -157,8 +157,6 @@ lottery_prediction_flow.png
 data/**/*.bak
 data/**/*.bak-*
 !state/
-state/kl8_pick4_prospective/
-state/kl8_pick4_joint_ab_v1/
 state/ssq_diversified_portfolio_v2/
 state/ssq_8red1blue_v1/
 state/ssq_challenger_e_v1/
