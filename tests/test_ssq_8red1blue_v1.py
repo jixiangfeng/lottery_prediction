@@ -13,7 +13,7 @@ from src.analysis.ssq_8red1blue_v1_history import (
     evaluate_full_history,
     walk_forward_d8_fingerprints,
 )
-from src.analysis.ssq_diversified_portfolio_v2 import build_diversified_portfolio_v2
+from src.analysis.ssq_d8_b35_support import build_diversified_portfolio_v2
 from src.analysis.ssq_history import SSQDraw
 from src.analysis.ssq_small_compound_8red1blue_v1 import (
     build_small_compound_8red1blue_v1,

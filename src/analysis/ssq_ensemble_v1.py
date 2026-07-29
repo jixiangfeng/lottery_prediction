@@ -9,7 +9,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Sequence
 
-from src.analysis.ssq_diversified_portfolio_v2 import (
+from src.analysis.ssq_d8_b35_support import (
     build_diversified_portfolio_v2,
 )
 from src.analysis.ssq_history import SSQDraw

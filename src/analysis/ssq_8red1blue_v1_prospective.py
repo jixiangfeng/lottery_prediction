@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from src.analysis.ssq_diversified_portfolio_v2_prospective import (
+from src.analysis.ssq_d8_chain_support import (
     _atomic_replace_artifact,
     _draw_deadline,
     _fsync_directory,

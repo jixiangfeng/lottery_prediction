@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from itertools import combinations
 from typing import cast
 
-from src.analysis.ssq_diversified_portfolio_v2 import ranked_balls
+from src.analysis.ssq_d8_b35_support import ranked_balls
 from src.lotteries.ssq import SSQ_RULE
 
 SCHEMA_VERSION = "ssq_small_compound_8red1blue_v1"

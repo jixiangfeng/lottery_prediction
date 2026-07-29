@@ -1,4 +1,4 @@
-# 双色球、超级大乐透研究工具
+# 双色球D8与超级大乐透研究工具
 
 .DEFAULT_GOAL := help
 RUN ?= uv run --python 3.11 --with-requirements requirements-dev.txt python
@@ -8,20 +8,8 @@ SSQ_CSV ?= data/ssq/official_history.csv
 SSQ_RAW_JSONL ?= data/ssq/raw/history.jsonl
 SSQ_FETCH_PERIODS ?= 0
 SSQ_ENSEMBLE_OUTPUT ?= $(OUTPUT_DIR)/research/ssq_ensemble_v1.json
-SSQ_WEIGHT_V2_OUTPUT ?= $(OUTPUT_DIR)/research/ssq_weight_training_v2.json
-SSQ_SMALL_COMPOUND_OUTPUT ?= $(OUTPUT_DIR)/retrospective/ssq_small_compound_top5_full_history_v1.json
-SSQ_DIVERSIFIED_OUTPUT ?= $(OUTPUT_DIR)/retrospective/ssq_diversified_portfolio_v2_full_history.json
-SSQ_B_STATE ?= state/ssq_diversified_portfolio_v2
-SSQ_B_KEY ?=
 SSQ_D8_STATE ?= state/ssq_8red1blue_v1
 SSQ_D8_KEY ?=
-SSQ_E_STATE ?= state/ssq_challenger_e_v1
-SSQ_E_KEY ?=
-SSQ_E_CURRENT ?= $(OUTPUT_DIR)/research/ssq_challenger_e_v1.json
-SSQ_E_HISTORY ?= $(OUTPUT_DIR)/retrospective/ssq_challenger_e_v1_full_history.json
-SSQ_E2_CURRENT ?= $(OUTPUT_DIR)/research/ssq_challenger_e2_v1.json
-SSQ_E2_SELECTION ?= $(OUTPUT_DIR)/retrospective/ssq_challenger_e2_selection_v1.json
-SSQ_E2_ENSEMBLE ?= $(OUTPUT_DIR)/retrospective/ssq_ensemble_v1_through_2026085.json
 
 DLT_RAW_JSONL ?= data/dlt/raw/history.jsonl
 DLT_CSV ?= data/dlt/official_history.csv
@@ -31,15 +19,11 @@ DLT_VALIDATION_REPORT ?= $(OUTPUT_DIR)/retrospective/dlt_7plus2_validation_v1.js
 DLT_C5_DIAGNOSTIC_REPORT ?= $(OUTPUT_DIR)/development/dlt_7plus2_c5_diagnostic_v1.json
 
 .PHONY: setup fmt lint test build run ci clean help \
-	ssq-fetch ssq-reconcile ssq-evaluate ssq-weight-train-v2 \
-	ssq-small-compound-history ssq-diversified-history \
-	ssq-b-register ssq-b-snapshot ssq-b-update ssq-b-status \
-	ssq-d8-history ssq-d8-register ssq-d8-snapshot ssq-d8-update ssq-d8-status \
-	ssq-e-current ssq-e-history ssq-e2 \
-	ssq-e-register ssq-e-snapshot ssq-e-update ssq-e-status \
+	ssq-fetch ssq-reconcile ssq-evaluate ssq-d8-history \
+	ssq-d8-register ssq-d8-snapshot ssq-d8-update ssq-d8-status \
 	dlt-fetch dlt-reconcile dlt-search dlt-validation dlt-c5-diagnostic
 
-setup: ## 创建仅保留双色球与超级大乐透的运行目录
+setup: ## 创建运行目录
 	$(RUN) -c "from pathlib import Path; [Path(p).mkdir(parents=True, exist_ok=True) for p in ['data/ssq/raw','data/dlt/raw','reports','logs']]"
 
 fmt: ## 格式化Python代码
@@ -53,47 +37,26 @@ lint: ## 格式、导入、风格和类型检查
 	$(RUN) -m mypy src
 
 test: ## 全量测试且覆盖率不得低于80%
-	$(RUN) -m pytest tests -q --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+	$(RUN) -m pytest tests -q --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=0
+	$(RUN) -m coverage report --fail-under=80
 
 build: ## 编译全部保留源码
 	$(RUN) -m compileall -q src scripts examples
 
 run: help
 
-# 双色球
+# 双色球：仅保留D8（8红+1蓝）
 ssq-fetch:
 	$(RUN) -m scripts.ssq_fetch_history --periods $(SSQ_FETCH_PERIODS) --output-jsonl $(SSQ_RAW_JSONL)
 ssq-reconcile:
 	$(RUN) -m scripts.ssq_reconcile_history --raw-jsonl $(SSQ_RAW_JSONL) --output-csv $(SSQ_CSV)
 ssq-evaluate:
 	$(RUN) -m scripts.ssq_ensemble_v1 --csv $(SSQ_CSV) --output $(SSQ_ENSEMBLE_OUTPUT)
-ssq-weight-train-v2:
-	$(RUN) -m scripts.ssq_weight_training_v2 --csv $(SSQ_CSV) --output $(SSQ_WEIGHT_V2_OUTPUT)
-ssq-small-compound-history:
-	$(RUN) -m scripts.ssq_small_compound_top5_history_v1 --csv $(SSQ_CSV) --output $(SSQ_SMALL_COMPOUND_OUTPUT)
-ssq-diversified-history:
-	$(RUN) -m scripts.ssq_diversified_portfolio_v2_history --csv $(SSQ_CSV) --output $(SSQ_DIVERSIFIED_OUTPUT)
 ssq-d8-history:
 	$(RUN) -m scripts.ssq_8red1blue_v1_history --csv $(SSQ_CSV) --output $(OUTPUT_DIR)/retrospective/ssq_8red1blue_v1_full_history.json
-ssq-e-current:
-	$(RUN) -m scripts.ssq_challenger_e_v1 --csv $(SSQ_CSV) --ensemble-report $(SSQ_ENSEMBLE_OUTPUT) --output $(SSQ_E_CURRENT)
-ssq-e-history:
-	$(RUN) -m scripts.ssq_challenger_e_v1_history --csv $(SSQ_CSV) --output $(SSQ_E_HISTORY)
-ssq-e2:
-	$(RUN) -m scripts.ssq_challenger_e2_selection_v1 --csv $(SSQ_CSV) --ensemble-report $(SSQ_E2_ENSEMBLE) --output $(SSQ_E2_SELECTION) --current-output $(SSQ_E2_CURRENT)
-
-ssq-b-register ssq-b-snapshot ssq-b-update ssq-b-status:
-	@test -n "$(SSQ_B_KEY)" || (echo "必须设置SSQ_B_KEY" >&2; exit 2)
-	$(RUN) scripts/ssq_diversified_portfolio_v2_prospective.py $(patsubst ssq-b-%,%,$@) --csv $(SSQ_CSV) --state-dir $(SSQ_B_STATE) --hmac-key-file $(SSQ_B_KEY) $(if $(filter register snapshot,$(patsubst ssq-b-%,%,$@)),--ensemble-report $(SSQ_ENSEMBLE_OUTPUT),)
-
 ssq-d8-register ssq-d8-snapshot ssq-d8-update ssq-d8-status:
 	@test -n "$(SSQ_D8_KEY)" || (echo "必须设置SSQ_D8_KEY" >&2; exit 2)
 	$(RUN) scripts/ssq_8red1blue_v1_prospective.py $(patsubst ssq-d8-%,%,$@) --csv $(SSQ_CSV) --state-dir $(SSQ_D8_STATE) --hmac-key-file $(SSQ_D8_KEY) $(if $(filter register snapshot,$(patsubst ssq-d8-%,%,$@)),--ensemble-report $(SSQ_ENSEMBLE_OUTPUT),)
-
-ssq-e-register ssq-e-snapshot ssq-e-update ssq-e-status:
-	@test -n "$(SSQ_E_KEY)" || (echo "必须设置SSQ_E_KEY" >&2; exit 2)
-	@test -n "$(SSQ_D8_KEY)" || (echo "必须设置SSQ_D8_KEY" >&2; exit 2)
-	$(RUN) scripts/ssq_challenger_e_v1_prospective.py $(patsubst ssq-e-%,%,$@) --csv $(SSQ_CSV) --state-dir $(SSQ_E_STATE) --hmac-key-file $(SSQ_E_KEY) $(if $(filter register snapshot,$(patsubst ssq-e-%,%,$@)),--e-report $(SSQ_E_CURRENT) --ensemble-report $(SSQ_ENSEMBLE_OUTPUT) --d8-state-dir $(SSQ_D8_STATE) --d8-hmac-key-file $(SSQ_D8_KEY),$(if $(filter update,$(patsubst ssq-e-%,%,$@)),--d8-state-dir $(SSQ_D8_STATE) --d8-hmac-key-file $(SSQ_D8_KEY),))
 
 # 大乐透
 dlt-fetch:
@@ -114,6 +77,6 @@ clean:
 	$(RUN) -c "import pathlib, shutil; [shutil.rmtree(p, ignore_errors=True) for n in ['build','dist','.pytest_cache','htmlcov'] for p in [pathlib.Path(n)]]; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"
 
 help:
-	@echo "保留玩法：双色球(ssq)、超级大乐透(dlt)"
-	@echo "make ssq-evaluate | dlt-search | dlt-validation"
+	@echo "双色球仅保留D8（8红+1蓝）；保留超级大乐透(dlt)"
+	@echo "make ssq-evaluate | ssq-d8-history | dlt-search | dlt-validation"
 	@echo "make ci  运行完整质量闸门"

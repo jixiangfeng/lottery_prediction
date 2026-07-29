@@ -1,9 +1,11 @@
-# 彩票研究工具：双色球、超级大乐透
+# 彩票研究工具：双色球D8、超级大乐透
 
-本仓库只保留两个相互隔离的研究域：
+本仓库保留两个相互隔离的研究域：
 
-- `ssq`：双色球，官方历史、严格前序评估、B/D8/E影子链；
-- `dlt`：超级大乐透，官方历史、7+2固定成本Search/Validation研究。
+- `ssq`：双色球D8（8红+1蓝）、官方历史、严格前序评估与独立HMAC前瞻链；
+- `dlt`：超级大乐透，7+2固定成本Search/Validation研究。
+
+D8内部生成B35参照票以执行零完整票重叠约束；该参照不是独立策略、没有独立前瞻链或命令入口。
 
 所有输出均为研究用途，不承诺中奖，不自动下单，不自动提高预算。模型未通过固定闸门时统一保持`uniform_abstain`。
 
@@ -18,16 +20,18 @@ make ci
 ## 常用入口
 
 ```bash
-# 双色球
+# 双色球D8
 make ssq-fetch
 make ssq-reconcile
 make ssq-evaluate
+make ssq-d8-history
 
 # 超级大乐透
 make dlt-fetch
 make dlt-reconcile
 make dlt-search
 make dlt-validation
+```
 
 ## 数据目录
 

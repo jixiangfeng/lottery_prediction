@@ -143,11 +143,8 @@ reports/
 reports/*
 !reports/research/
 reports/research/*
-!reports/research/ssq_challenger_e2_v1.json
 !reports/retrospective/
 reports/retrospective/*
-!reports/retrospective/ssq_challenger_e2_selection_v1.json
-!reports/retrospective/ssq_ensemble_v1_through_2026085.json
 state/
 lottery_prediction_flow.html
 lottery_prediction_flow.png
@@ -157,9 +154,7 @@ lottery_prediction_flow.png
 data/**/*.bak
 data/**/*.bak-*
 !state/
-state/ssq_diversified_portfolio_v2/
 state/ssq_8red1blue_v1/
-state/ssq_challenger_e_v1/
 models/
 cache/
 temp/

@@ -16,7 +16,7 @@ from typing import cast
 
 from scipy import stats
 
-from src.analysis.ssq_diversified_portfolio_v2 import build_diversified_portfolio_v2
+from src.analysis.ssq_d8_b35_support import build_diversified_portfolio_v2
 from src.analysis.ssq_ensemble_v1 import EVALUATION_WARMUP_DRAWS, FixedEnsembleState
 from src.analysis.ssq_history import SSQDraw
 from src.analysis.ssq_small_compound_8red1blue_v1 import (
