@@ -45,7 +45,7 @@ build: ## 编译全部保留源码
 
 run: help
 
-# 双色球：仅保留D8（8红+1蓝）
+# 双色球：保留D8、D8+7单式与Top20分层v3.3.1构造
 ssq-fetch:
 	$(RUN) -m scripts.ssq_fetch_history --periods $(SSQ_FETCH_PERIODS) --output-jsonl $(SSQ_RAW_JSONL)
 ssq-reconcile:
@@ -54,6 +54,7 @@ ssq-evaluate:
 	$(RUN) -m scripts.ssq_ensemble_v1 --csv $(SSQ_CSV) --output $(SSQ_ENSEMBLE_OUTPUT)
 ssq-d8-history:
 	$(RUN) -m scripts.ssq_8red1blue_v1_history --csv $(SSQ_CSV) --output $(OUTPUT_DIR)/retrospective/ssq_8red1blue_v1_full_history.json
+
 ssq-d8-register ssq-d8-snapshot ssq-d8-update ssq-d8-status:
 	@test -n "$(SSQ_D8_KEY)" || (echo "必须设置SSQ_D8_KEY" >&2; exit 2)
 	$(RUN) scripts/ssq_8red1blue_v1_prospective.py $(patsubst ssq-d8-%,%,$@) --csv $(SSQ_CSV) --state-dir $(SSQ_D8_STATE) --hmac-key-file $(SSQ_D8_KEY) $(if $(filter register snapshot,$(patsubst ssq-d8-%,%,$@)),--ensemble-report $(SSQ_ENSEMBLE_OUTPUT),)
@@ -77,6 +78,6 @@ clean:
 	$(RUN) -c "import pathlib, shutil; [shutil.rmtree(p, ignore_errors=True) for n in ['build','dist','.pytest_cache','htmlcov'] for p in [pathlib.Path(n)]]; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"
 
 help:
-	@echo "双色球仅保留D8（8红+1蓝）；保留超级大乐透(dlt)"
+	@echo "双色球仅保留D8、D8+7单式、Top20分层v3.3.1；保留超级大乐透(dlt)"
 	@echo "make ssq-evaluate | ssq-d8-history | dlt-search | dlt-validation"
 	@echo "make ci  运行完整质量闸门"
