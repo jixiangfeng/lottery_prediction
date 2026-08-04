@@ -1,49 +1,29 @@
-# 彩票研究工具：双色球D8、超级大乐透
+# 双色球 D8 / D8+7 研究工具
 
-本仓库保留两个相互隔离的研究域：
+本仓库仅保留双色球的两个固定研究链：
 
-- `ssq`：双色球D8（8红+1蓝）、官方历史、严格前序评估与独立HMAC前瞻链；另有不创建前瞻状态的D8 v2 ML challenger历史诊断；
-- `dlt`：超级大乐透，7+2固定成本Search/Validation研究。
+- **D8**：8红+1蓝，展开28注，固定成本56元；
+- **D8+7**：D8的28注加7张固定边界单式，共35注、70元。
 
-D8内部生成B35参照票以执行零完整票重叠约束；该参照不是独立策略、没有独立前瞻链或命令入口。
+D8 内部使用 B35 作为确定性去重参照，不是独立策略。
 
-所有输出均为研究用途，不承诺中奖，不自动下单，不自动提高预算。模型未通过固定闸门时统一保持`uniform_abstain`。
-
-## 环境
-
-```bash
-uv run --python 3.11 --with-requirements requirements-dev.txt python -V
-make setup
-make ci
-```
+所有输出仅用于研究：不承诺中奖、不自动下单、不追号或加码。未通过独立前瞻门禁的结论保持 `uniform_abstain`。
 
 ## 常用入口
 
 ```bash
-# 双色球D8
 make ssq-fetch
 make ssq-reconcile
 make ssq-evaluate
 make ssq-d8-history
-
-# 超级大乐透
-make dlt-fetch
-make dlt-reconcile
-make dlt-search
-make dlt-validation
-```
-
-## 数据目录
-
-```text
-data/ssq/
-data/dlt/
+make ssq-d8-official-backtest
+make ci
 ```
 
 ## 审计原则
 
 1. 仅使用固定官方来源；
 2. 严格先预测、后开奖、再更新；
-3. 固定成本随机基线与proper score共同否决；
-4. 失败不放宽闸门，不用历史稀有命中倒推模型；
-5. 前瞻状态使用SHA-256/HMAC、原子写入和逐期结算。
+3. 使用固定成本随机基线与 proper score；
+4. 不因单期结果反向调参；
+5. 前瞻状态使用 SHA-256/HMAC、原子写入与逐期结算。
